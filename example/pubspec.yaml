@@ -1,0 +1,20 @@
+name: libre_location_example
+description: Example app demonstrating libre_location plugin.
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.1.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  libre_location:
+    path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

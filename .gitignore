@@ -1,0 +1,15 @@
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+*.ipr
+*.iws
+.idea/
+.DS_Store
+pubspec.lock
+doc/api/
+.fvm/
+coverage/
+*.g.dart
