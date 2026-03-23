@@ -1,7 +1,6 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import '../libre_location.dart';
-import 'libre_location_method_channel.dart';
 
 /// The platform interface for the libre_location plugin.
 abstract class LibreLocationPlatform extends PlatformInterface {

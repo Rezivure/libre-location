@@ -1,7 +1,6 @@
 import 'package:flutter/services.dart';
 
 import '../libre_location.dart';
-import 'libre_location_platform.dart';
 
 /// The MethodChannel-based implementation of [LibreLocationPlatform].
 class MethodChannelLibreLocation extends LibreLocationPlatform {
