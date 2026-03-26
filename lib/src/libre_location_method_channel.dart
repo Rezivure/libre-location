@@ -14,6 +14,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   static const EventChannel _providerChangeChannel = EventChannel('libre_location/providerChange');
   static const EventChannel _heartbeatChannel = EventChannel('libre_location/heartbeat');
   static const EventChannel _powerSaveChannel = EventChannel('libre_location/powerSaveChange');
+  static const EventChannel _permissionChangeChannel = EventChannel('libre_location/permissionChange');
 
   Stream<Position>? _positionStream;
   Stream<GeofenceEvent>? _geofenceStream;
@@ -22,6 +23,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<ProviderEvent>? _providerChangeStream;
   Stream<HeartbeatEvent>? _heartbeatStream;
   Stream<bool>? _powerSaveStream;
+  Stream<LocationPermission>? _permissionChangeStream;
 
   @override
   Future<void> startTracking(LocationConfig config) async {
@@ -213,6 +215,44 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
             ?.map((m) => Map<String, dynamic>.from(m))
             .toList() ??
         [];
+  }
+
+  @override
+  Future<LocationPermission> requestAlwaysPermission() async {
+    final result = await _channel.invokeMethod<int>('requestAlwaysPermission');
+    return LocationPermission.values[result ?? 0];
+  }
+
+  @override
+  Future<bool> openAppSettings() async {
+    final result = await _channel.invokeMethod<bool>('openAppSettings');
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> openLocationSettings() async {
+    final result = await _channel.invokeMethod<bool>('openLocationSettings');
+    return result ?? false;
+  }
+
+  @override
+  Stream<LocationPermission> get permissionChangeStream {
+    _permissionChangeStream ??= _permissionChangeChannel
+        .receiveBroadcastStream()
+        .map((event) => LocationPermission.values[event as int]);
+    return _permissionChangeStream!;
+  }
+
+  @override
+  Future<bool> shouldShowRequestRationale() async {
+    final result = await _channel.invokeMethod<bool>('shouldShowRequestRationale');
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> isLocationServiceEnabled() async {
+    final result = await _channel.invokeMethod<bool>('isLocationServiceEnabled');
+    return result ?? false;
   }
 
   @override

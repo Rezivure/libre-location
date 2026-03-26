@@ -60,6 +60,8 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     private var providerStreamHandler: GenericStreamHandler? = null
     private var heartbeatStreamHandler: GenericStreamHandler? = null
     private var powerSaveStreamHandler: GenericStreamHandler? = null
+    private var permissionChangeStreamHandler: GenericStreamHandler? = null
+    private lateinit var permissionChangeEventChannel: EventChannel
 
     private var powerSaveReceiver: PowerSaveReceiver? = null
     private var currentConfig: TrackingConfig? = null
@@ -100,6 +102,10 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         powerSaveStreamHandler = GenericStreamHandler()
         powerSaveEventChannel = EventChannel(binding.binaryMessenger, "libre_location/powerSaveChange")
         powerSaveEventChannel.setStreamHandler(powerSaveStreamHandler)
+
+        permissionChangeStreamHandler = GenericStreamHandler()
+        permissionChangeEventChannel = EventChannel(binding.binaryMessenger, "libre_location/permissionChange")
+        permissionChangeEventChannel.setStreamHandler(permissionChangeStreamHandler)
 
         // Initialize components
         locationDatabase = LocationDatabase(context)
@@ -205,6 +211,50 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             // Permissions
             "checkPermission" -> result.success(checkPermissionStatus())
             "requestPermission" -> requestLocationPermission(result)
+            "requestAlwaysPermission" -> requestAlwaysPermission(result)
+            "openAppSettings" -> {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    intent.data = android.net.Uri.fromParts("package", context.packageName, null)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.success(false)
+                }
+            }
+            "openLocationSettings" -> {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.success(false)
+                }
+            }
+            "shouldShowRequestRationale" -> {
+                val act = activity
+                if (act != null) {
+                    result.success(
+                        ActivityCompat.shouldShowRequestPermissionRationale(
+                            act, android.Manifest.permission.ACCESS_FINE_LOCATION
+                        )
+                    )
+                } else {
+                    result.success(false)
+                }
+            }
+            "isLocationServiceEnabled" -> {
+                val lm = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+                val enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    lm.isLocationEnabled
+                } else {
+                    lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+                        lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+                }
+                result.success(enabled)
+            }
 
             // State queries
             "isMoving" -> result.success(motionDetector?.isMoving ?: true)
@@ -623,6 +673,43 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         return 3 // always (pre-Q doesn't have background distinction)
     }
 
+    private fun requestAlwaysPermission(result: Result) {
+        val act = activity
+        if (act == null) {
+            result.error("NO_ACTIVITY", "No activity available to request permissions", null)
+            return
+        }
+
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!fineGranted) {
+            // Need foreground first, then background
+            requestLocationPermission(result)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val bgGranted = ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (bgGranted) {
+                result.success(3) // already always
+                return
+            }
+            pendingPermissionResult = result
+            ActivityCompat.requestPermissions(
+                act,
+                arrayOf(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+                PERMISSION_REQUEST_BG_CODE
+            )
+        } else {
+            // Pre-Q: foreground = always
+            result.success(checkPermissionStatus())
+        }
+    }
+
     private fun requestLocationPermission(result: Result) {
         val act = activity
         if (act == null) {
@@ -696,6 +783,12 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
 
         pendingPermissionResult?.success(status)
         pendingPermissionResult = null
+
+        // Emit permission change event
+        mainHandler.post {
+            permissionChangeStreamHandler?.send(status)
+        }
+
         return true
     }
 

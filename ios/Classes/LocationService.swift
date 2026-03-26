@@ -94,6 +94,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private var onProviderChange: (([String: Any]) -> Void)?
     private var onMotionChange: (([String: Any]) -> Void)?
     private var onHeartbeat: (([String: Any]) -> Void)?
+    private var onPermissionChange: ((Int) -> Void)?
 
     private var oneShotCallbacks: [(([String: Any]) -> Void)] = []
     private var oneShotSamples: [[String: Any]] = []
@@ -126,11 +127,13 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     init(onPosition: @escaping ([String: Any]) -> Void,
          onProviderChange: (([String: Any]) -> Void)? = nil,
          onMotionChange: (([String: Any]) -> Void)? = nil,
-         onHeartbeat: (([String: Any]) -> Void)? = nil) {
+         onHeartbeat: (([String: Any]) -> Void)? = nil,
+         onPermissionChange: ((Int) -> Void)? = nil) {
         self.onPosition = onPosition
         self.onProviderChange = onProviderChange
         self.onMotionChange = onMotionChange
         self.onHeartbeat = onHeartbeat
+        self.onPermissionChange = onPermissionChange
         super.init()
         locationManager.delegate = self
         // Enable battery monitoring so we can include level/charging in every position
@@ -346,6 +349,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    func requestAlwaysPermission(callback: @escaping (Int) -> Void) {
+        let status = permissionInt()
+        if status == 0 {
+            // Not determined — request WhenInUse first, then Always will follow
+            permissionCallback = callback
+            locationManager.requestWhenInUseAuthorization()
+        } else if status == 2 {
+            // WhenInUse granted — escalate to Always
+            permissionCallback = callback
+            locationManager.requestAlwaysAuthorization()
+        } else {
+            // Already always (3) or denied (1) — can't re-ask, return current
+            callback(status)
+        }
+    }
+
     // MARK: - Temporary Full Accuracy (iOS 14+)
 
     @available(iOS 14.0, *)
@@ -462,6 +481,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
                 permissionCallback = nil
             }
         }
+
+        // Emit permission change
+        onPermissionChange?(perm)
 
         // Emit provider change — format must match Dart ProviderEvent
         let info: [String: Any] = [

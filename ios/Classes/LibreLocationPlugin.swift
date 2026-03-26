@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import BackgroundTasks
+import CoreLocation
 
 /// Flutter plugin for production-grade background location tracking on iOS.
 ///
@@ -35,6 +36,7 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
     private var motionChangeStreamHandler: StreamHandler?
     private var heartbeatStreamHandler: StreamHandler?
     private var powerSaveStreamHandler: StreamHandler?
+    private var permissionChangeStreamHandler: StreamHandler?
 
     // BGTaskScheduler
     static let bgTaskIdentifier = "io.rezivure.libre_location.heartbeat"
@@ -111,6 +113,13 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.powerSaveStreamHandler)
 
+        // Permission change stream
+        instance.permissionChangeStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/permissionChange",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.permissionChangeStreamHandler)
+
         // Observe low power mode changes
         NotificationCenter.default.addObserver(
             instance,
@@ -132,6 +141,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             },
             onHeartbeat: { info in
                 instance.heartbeatStreamHandler?.send(info)
+            },
+            onPermissionChange: { status in
+                instance.permissionChangeStreamHandler?.send(status)
             }
         )
 
@@ -384,6 +396,37 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             locationService?.requestPermission { status in
                 result(status)
             }
+
+        case "requestAlwaysPermission":
+            locationService?.requestAlwaysPermission { status in
+                result(status)
+            }
+
+        case "openAppSettings":
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url, options: [:]) { success in
+                    result(success)
+                }
+            } else {
+                result(false)
+            }
+
+        case "openLocationSettings":
+            // iOS doesn't allow deep-linking to location settings directly;
+            // best we can do is open the app's settings page.
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url, options: [:]) { success in
+                    result(success)
+                }
+            } else {
+                result(false)
+            }
+
+        case "shouldShowRequestRationale":
+            result(false) // Android-only concept
+
+        case "isLocationServiceEnabled":
+            result(CLLocationManager.locationServicesEnabled())
 
         // ── State Queries ────────────────────────────────────────
 

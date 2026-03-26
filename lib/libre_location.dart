@@ -238,6 +238,40 @@ class LibreLocation {
     return LibreLocationPlatform.instance.requestPermission();
   }
 
+  /// Request "Always" (background) location permission.
+  ///
+  /// This handles the upgrade flow from "When In Use" → "Always":
+  /// - iOS: Two-step process. If already denied, returns deniedForever.
+  /// - Android 10+: Requests ACCESS_BACKGROUND_LOCATION separately.
+  /// - Android 11+: May need to send user to Settings.
+  static Future<LocationPermission> requestAlwaysPermission() {
+    return LibreLocationPlatform.instance.requestAlwaysPermission();
+  }
+
+  /// Opens the app's system settings page where the user can change permissions.
+  static Future<bool> openAppSettings() {
+    return LibreLocationPlatform.instance.openAppSettings();
+  }
+
+  /// Opens the device location settings (e.g., to enable GPS).
+  static Future<bool> openLocationSettings() {
+    return LibreLocationPlatform.instance.openLocationSettings();
+  }
+
+  /// Stream that fires when location permission status changes.
+  static Stream<LocationPermission> get onPermissionChange =>
+      LibreLocationPlatform.instance.permissionChangeStream;
+
+  /// Android-only: whether to show a rationale before requesting permission.
+  static Future<bool> shouldShowRequestRationale() {
+    return LibreLocationPlatform.instance.shouldShowRequestRationale();
+  }
+
+  /// Checks if device-level location services (GPS) are enabled.
+  static Future<bool> isLocationServiceEnabled() {
+    return LibreLocationPlatform.instance.isLocationServiceEnabled();
+  }
+
   // ───────────────────────────────────────────
   // Geofencing
   // ───────────────────────────────────────────

@@ -87,6 +87,40 @@ abstract class LibreLocationPlatform extends PlatformInterface {
     throw UnimplementedError('requestPermission() has not been implemented.');
   }
 
+  /// Requests "Always" (background) location permission, upgrading from "When In Use".
+  /// On iOS: calls requestAlwaysAuthorization after WhenInUse is granted.
+  /// On Android 10+: requests ACCESS_BACKGROUND_LOCATION separately.
+  Future<LocationPermission> requestAlwaysPermission() {
+    throw UnimplementedError('requestAlwaysPermission() has not been implemented.');
+  }
+
+  /// Opens the app's system settings page where the user can change permissions.
+  Future<bool> openAppSettings() {
+    throw UnimplementedError('openAppSettings() has not been implemented.');
+  }
+
+  /// Opens the device location settings (e.g., to enable GPS).
+  Future<bool> openLocationSettings() {
+    throw UnimplementedError('openLocationSettings() has not been implemented.');
+  }
+
+  /// Stream that fires when location permission status changes.
+  Stream<LocationPermission> get permissionChangeStream {
+    throw UnimplementedError('permissionChangeStream has not been implemented.');
+  }
+
+  /// Android-only: returns true if the app should show a rationale before
+  /// requesting location permission (user previously denied but didn't
+  /// check "don't ask again").
+  Future<bool> shouldShowRequestRationale() {
+    throw UnimplementedError('shouldShowRequestRationale() has not been implemented.');
+  }
+
+  /// Checks if device-level location services (GPS) are enabled.
+  Future<bool> isLocationServiceEnabled() {
+    throw UnimplementedError('isLocationServiceEnabled() has not been implemented.');
+  }
+
   /// Registers a headless callback dispatcher for receiving location updates
   /// after app termination (Android only).
   Future<void> registerHeadlessDispatcher(

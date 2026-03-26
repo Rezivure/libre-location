@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:libre_location/libre_location.dart';
+import 'permission_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -226,6 +227,14 @@ class _LocationPageState extends State<LocationPage> {
       appBar: AppBar(
         title: const Text('Libre Location'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.security),
+            tooltip: 'Permission flow',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const PermissionScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.download),
             tooltip: 'Load native logs',
