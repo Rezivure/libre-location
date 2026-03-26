@@ -103,6 +103,14 @@ class LocationManagerWrapper(
 
     @SuppressLint("MissingPermission")
     fun startTracking(config: TrackingConfig) {
+        // Remove any existing listeners to prevent duplicates if called twice
+        if (isTracking) {
+            locationManager.removeUpdates(primaryListener)
+            locationManager.removeUpdates(secondaryListener)
+            stopHeartbeat()
+            handler.removeCallbacks(providerCheckRunnable)
+        }
+
         this.config = config
         isTracking = true
         isMoving = true

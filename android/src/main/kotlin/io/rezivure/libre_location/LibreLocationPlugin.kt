@@ -174,6 +174,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         powerSaveEventChannel.setStreamHandler(null)
 
         powerSaveReceiver?.unregister()
+        geofenceManager?.destroy()
 
         // Only stop if stopOnTerminate is true
         if (currentConfig?.stopOnTerminate != false) {
