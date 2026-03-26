@@ -414,6 +414,29 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         case "getBufferedLocations":
             result(LocationBuffer.flush())
 
+        // ── Android-only methods (no-op on iOS) ──────────────────
+
+        case "checkBatteryOptimization":
+            result(false) // iOS doesn't have battery optimization restrictions
+
+        case "requestBatteryOptimizationExemption":
+            result(true) // no-op on iOS
+
+        case "isAutoStartEnabled":
+            result([
+                "manufacturer": "apple",
+                "hasAutoStartSetting": false,
+                "isBatteryOptimized": false,
+            ] as [String: Any])
+
+        case "openPowerManagerSettings":
+            result(false) // no manufacturer-specific settings on iOS
+
+        case "registerHeadlessDispatcher":
+            // iOS uses significant location changes for termination recovery,
+            // no headless Dart engine needed. Accept and ignore.
+            result(nil)
+
         default:
             result(FlutterMethodNotImplemented)
         }
