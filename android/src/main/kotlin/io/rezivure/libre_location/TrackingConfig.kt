@@ -57,6 +57,14 @@ data class TrackingConfig(
 
     // Battery
     val preventSuspend: Boolean = false,
+
+    // GPS filtering
+    val locationFilterEnabled: Boolean = true,
+    val maxAccuracy: Float = 100f,
+    val maxSpeed: Float = 83.33f,
+
+    // Logging
+    val logLevel: Int = 0, // 0=off, 1=error, 2=warning, 3=info, 4=debug, 5=verbose
 ) {
 
     fun toMap(): Map<String, Any?> = mapOf(
@@ -86,6 +94,10 @@ data class TrackingConfig(
         "maxRecordsToPersist" to maxRecordsToPersist,
         "persistLocations" to persistLocations,
         "preventSuspend" to preventSuspend,
+        "locationFilterEnabled" to locationFilterEnabled,
+        "maxAccuracy" to maxAccuracy.toDouble(),
+        "maxSpeed" to maxSpeed.toDouble(),
+        "logLevel" to logLevel,
     )
 
     /**
@@ -158,6 +170,10 @@ data class TrackingConfig(
                 maxRecordsToPersist = args["maxRecordsToPersist"] as? Int ?: 10_000,
                 persistLocations = args["persistLocations"] as? Boolean ?: true,
                 preventSuspend = args["preventSuspend"] as? Boolean ?: false,
+                locationFilterEnabled = args["locationFilterEnabled"] as? Boolean ?: true,
+                maxAccuracy = (args["maxAccuracy"] as? Number)?.toFloat() ?: 100f,
+                maxSpeed = (args["maxSpeed"] as? Number)?.toFloat() ?: 83.33f,
+                logLevel = (args["logLevel"] as? Number)?.toInt() ?: 0,
             )
         }
 
@@ -202,6 +218,10 @@ data class TrackingConfig(
                     maxRecordsToPersist = (map["maxRecordsToPersist"] as? Number)?.toInt() ?: 10_000,
                     persistLocations = map["persistLocations"] as? Boolean ?: true,
                     preventSuspend = map["preventSuspend"] as? Boolean ?: false,
+                    locationFilterEnabled = map["locationFilterEnabled"] as? Boolean ?: true,
+                    maxAccuracy = (map["maxAccuracy"] as? Number)?.toFloat() ?: 100f,
+                    maxSpeed = (map["maxSpeed"] as? Number)?.toFloat() ?: 83.33f,
+                    logLevel = (map["logLevel"] as? Number)?.toInt() ?: 0,
                 )
             } catch (e: Exception) {
                 null

@@ -27,9 +27,13 @@ class LocationManagerWrapper(
 
     companion object {
         private const val TAG = "LibreLocationMgr"
-        private const val MIN_ACCURACY_THRESHOLD = 100f
         private const val DUPLICATE_TIME_THRESHOLD = 1000L
     }
+
+    // GPS filter config
+    private var locationFilterEnabled: Boolean = true
+    private var maxAccuracy: Float = 100f
+    private var maxSpeed: Float = 83.33f // ~300 km/h
 
     private val locationManager: LocationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -102,12 +106,15 @@ class LocationManagerWrapper(
         this.config = config
         isTracking = true
         isMoving = true
+        locationFilterEnabled = config.locationFilterEnabled
+        maxAccuracy = config.maxAccuracy
+        maxSpeed = config.maxSpeed
 
         registerProviders()
         startHeartbeat()
         startProviderMonitoring()
 
-        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}")
+        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}, filter=$locationFilterEnabled")
     }
 
     fun stopTracking() {
@@ -249,6 +256,23 @@ class LocationManagerWrapper(
         }
     }
 
+    /**
+     * Manually override motion state. Used by changePace API.
+     */
+    fun changePace(moving: Boolean) {
+        if (!isTracking) return
+        if (moving) {
+            onMotionDetected()
+        } else {
+            val wasMoving = isMoving
+            isMoving = false
+            if (wasMoving && config.mode == 1) {
+                locationManager.removeUpdates(primaryListener)
+                Log.d(TAG, "changePace: forced stationary — GPS paused")
+            }
+        }
+    }
+
     fun onStillnessDetected() {
         if (!isTracking) return
         val wasMoving = isMoving
@@ -316,20 +340,54 @@ class LocationManagerWrapper(
     }
 
     private fun processLocation(location: Location) {
-        if (location.accuracy > MIN_ACCURACY_THRESHOLD && config.accuracy <= 1) {
-            return
-        }
-
-        val last = lastEmittedLocation
-        if (last != null) {
-            val timeSince = location.time - lastEmittedTime
-            if (timeSince < DUPLICATE_TIME_THRESHOLD) {
-                if (location.accuracy >= last.accuracy) return
+        if (locationFilterEnabled) {
+            // Reject locations with accuracy worse than threshold
+            if (location.accuracy > maxAccuracy) {
+                Log.v(TAG, "Filtered: accuracy ${location.accuracy}m > ${maxAccuracy}m")
+                return
             }
 
-            if (config.useSignificantChangesOnly) {
-                val distance = location.distanceTo(last)
-                if (distance < config.distanceFilter) return
+            val last = lastEmittedLocation
+            if (last != null) {
+                val timeDeltaSec = (location.time - lastEmittedTime) / 1000.0
+                if (timeDeltaSec > 0) {
+                    val distance = location.distanceTo(last)
+                    val impliedSpeed = distance / timeDeltaSec
+
+                    // Reject impossible speed
+                    if (impliedSpeed > maxSpeed) {
+                        Log.v(TAG, "Filtered: implied speed ${impliedSpeed}m/s > ${maxSpeed}m/s")
+                        return
+                    }
+
+                    // Distance filter: don't emit if distance < distanceFilter
+                    if (distance < config.distanceFilter) {
+                        // Smoothing: if within accuracy radius, weight toward previous
+                        if (distance < location.accuracy) {
+                            Log.v(TAG, "Filtered: within accuracy radius (${distance}m < ${location.accuracy}m)")
+                        }
+                        return
+                    }
+                }
+
+                // Duplicate time threshold
+                val timeSince = location.time - lastEmittedTime
+                if (timeSince < DUPLICATE_TIME_THRESHOLD) {
+                    if (location.accuracy >= last.accuracy) return
+                }
+            }
+        } else {
+            // Without filter, still do basic duplicate/distance checks
+            val last = lastEmittedLocation
+            if (last != null) {
+                val timeSince = location.time - lastEmittedTime
+                if (timeSince < DUPLICATE_TIME_THRESHOLD) {
+                    if (location.accuracy >= last.accuracy) return
+                }
+                if (config.useSignificantChangesOnly) {
+                    val distance = location.distanceTo(last)
+                    if (distance < config.distanceFilter) return
+                }
             }
         }
 

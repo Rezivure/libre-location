@@ -60,5 +60,11 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- Watchdog alarm receiver for self-healing after OEM kills -->
+        <receiver
+            android:name=".WatchdogAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
     </application>
 </manifest>

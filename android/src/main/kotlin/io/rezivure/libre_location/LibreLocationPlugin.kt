@@ -31,6 +31,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         private const val TAG = "LibreLocationPlugin"
         private const val PERMISSION_REQUEST_CODE = 34561
         private const val PERMISSION_REQUEST_BG_CODE = 34562
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 34563
     }
 
     private lateinit var channel: MethodChannel
@@ -40,10 +41,12 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     private lateinit var activityEventChannel: EventChannel
     private lateinit var providerEventChannel: EventChannel
     private lateinit var heartbeatEventChannel: EventChannel
+    private lateinit var powerSaveEventChannel: EventChannel
 
     private lateinit var context: Context
     private var activity: Activity? = null
     private var pendingPermissionResult: Result? = null
+    private var pendingNotificationPermissionResult: Result? = null
 
     private var locationManagerWrapper: LocationManagerWrapper? = null
     private var motionDetector: MotionDetector? = null
@@ -56,7 +59,9 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     private var activityStreamHandler: GenericStreamHandler? = null
     private var providerStreamHandler: GenericStreamHandler? = null
     private var heartbeatStreamHandler: GenericStreamHandler? = null
+    private var powerSaveStreamHandler: GenericStreamHandler? = null
 
+    private var powerSaveReceiver: PowerSaveReceiver? = null
     private var currentConfig: TrackingConfig? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -91,6 +96,10 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         heartbeatStreamHandler = GenericStreamHandler()
         heartbeatEventChannel = EventChannel(binding.binaryMessenger, "libre_location/heartbeat")
         heartbeatEventChannel.setStreamHandler(heartbeatStreamHandler)
+
+        powerSaveStreamHandler = GenericStreamHandler()
+        powerSaveEventChannel = EventChannel(binding.binaryMessenger, "libre_location/powerSaveChange")
+        powerSaveEventChannel.setStreamHandler(powerSaveStreamHandler)
 
         // Initialize components
         locationDatabase = LocationDatabase(context)
@@ -140,6 +149,14 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             }
         }
 
+        // Power save receiver
+        powerSaveReceiver = PowerSaveReceiver(context) { isPowerSave ->
+            mainHandler.post {
+                powerSaveStreamHandler?.send(isPowerSave)
+            }
+        }
+        powerSaveReceiver?.register()
+
         // Deliver any buffered locations from headless/boot mode
         deliverBufferedLocations()
 
@@ -154,6 +171,9 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         activityEventChannel.setStreamHandler(null)
         providerEventChannel.setStreamHandler(null)
         heartbeatEventChannel.setStreamHandler(null)
+        powerSaveEventChannel.setStreamHandler(null)
+
+        powerSaveReceiver?.unregister()
 
         // Only stop if stopOnTerminate is true
         if (currentConfig?.stopOnTerminate != false) {
@@ -256,6 +276,83 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 result.success(opened)
             }
 
+            // changePace — manual motion state override
+            "changePace" -> {
+                val args = call.arguments as? Map<*, *>
+                val isMoving = args?.get("isMoving") as? Boolean ?: true
+                locationManagerWrapper?.changePace(isMoving)
+                if (isMoving) {
+                    motionDetector?.let {
+                        // Force the detector's state
+                    }
+                    locationManagerWrapper?.onMotionDetected()
+                } else {
+                    locationManagerWrapper?.onStillnessDetected()
+                }
+                // Emit motion change event
+                val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
+                    ?: mutableMapOf(
+                        "latitude" to 0.0,
+                        "longitude" to 0.0,
+                        "altitude" to 0.0,
+                        "accuracy" to 0.0,
+                        "speed" to 0.0,
+                        "heading" to 0.0,
+                        "timestamp" to System.currentTimeMillis(),
+                        "provider" to "unknown",
+                    )
+                positionMap["isMoving"] = isMoving
+                mainHandler.post { motionStreamHandler?.send(positionMap) }
+                result.success(null)
+            }
+
+            // Logging
+            "getLog" -> {
+                result.success(LibreLocationLogger.getLog())
+            }
+
+            // Notification permission (Android 13+)
+            "checkNotificationPermission" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+                    result.success(granted)
+                } else {
+                    result.success(true) // Pre-13 doesn't need runtime permission
+                }
+            }
+
+            "requestNotificationPermission" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val act = activity
+                    if (act == null) {
+                        result.error("NO_ACTIVITY", "No activity available", null)
+                        return
+                    }
+                    val granted = ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        result.success(true)
+                    } else {
+                        pendingNotificationPermissionResult = result
+                        ActivityCompat.requestPermissions(
+                            act,
+                            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                            NOTIFICATION_PERMISSION_REQUEST_CODE
+                        )
+                    }
+                } else {
+                    result.success(true)
+                }
+            }
+
+            // requestTemporaryFullAccuracy — iOS only, no-op on Android
+            "requestTemporaryFullAccuracy" -> {
+                result.success(0) // fullAccuracy — always full on Android
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -337,6 +434,13 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             )
         }
 
+        // Set log level
+        LibreLocationLogger.logLevel = config.logLevel
+
+        // Schedule watchdog alarm for self-healing
+        WatchdogAlarmReceiver.schedule(context)
+
+        LibreLocationLogger.info("Tracking started: mode=${config.mode}, accuracy=${config.accuracy}")
         Log.d(TAG, "Tracking started with config: mode=${config.mode}, accuracy=${config.accuracy}")
         result.success(null)
     }
@@ -349,6 +453,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         context.stopService(serviceIntent)
 
         TrackingConfig.setTrackingEnabled(context, false)
+        WatchdogAlarmReceiver.cancel(context)
         currentConfig = null
 
         // Enforce retention on stop
@@ -564,6 +669,14 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         permissions: Array<out String>,
         grantResults: IntArray
     ): Boolean {
+        // Handle notification permission result
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            pendingNotificationPermissionResult?.success(granted)
+            pendingNotificationPermissionResult = null
+            return true
+        }
+
         if (requestCode != PERMISSION_REQUEST_CODE && requestCode != PERMISSION_REQUEST_BG_CODE) return false
 
         val status = checkPermissionStatus()
