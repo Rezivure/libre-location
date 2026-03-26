@@ -1,73 +1,604 @@
 import CoreLocation
+import UIKit
 
-/// CLLocationManager wrapper for background location tracking.
-class LocationService: NSObject, CLLocationManagerDelegate {
+// MARK: - Configuration
+
+/// Persisted configuration for location tracking, survives app restarts.
+struct LocationServiceConfig: Codable {
+    var accuracy: Int = 0
+    var intervalMs: Int = 60000
+    var distanceFilter: Double = 10.0
+    var mode: Int = 1
+    var enableMotionDetection: Bool = true
+    var stopTimeout: Int = 5          // minutes before declaring stationary
+    var stationaryRadius: Double = 25.0
+    var heartbeatInterval: Int = 0    // seconds; 0 = disabled
+    var pausesLocationUpdatesAutomatically: Bool = false
+    var activityType: Int = 0         // CLActivityType raw value
+    var stopOnTerminate: Bool = false
+    var preventSuspend: Bool = false
+    var useSignificantChangesOnly: Bool = false
+    var showsBackgroundLocationIndicator: Bool = true
+
+    static let userDefaultsKey = "libre_location_config"
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: Self.userDefaultsKey)
+        }
+    }
+
+    static func load() -> LocationServiceConfig? {
+        guard let data = UserDefaults.standard.data(forKey: Self.userDefaultsKey) else { return nil }
+        return try? JSONDecoder().decode(LocationServiceConfig.self, from: data)
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: Self.userDefaultsKey)
+    }
+}
+
+// MARK: - Location Buffer
+
+/// Buffers location data to UserDefaults so nothing is lost if the app is killed.
+final class LocationBuffer {
+    private static let key = "libre_location_buffer"
+    private static let maxSize = 1000
+
+    static func append(_ location: [String: Any]) {
+        var buffer = load()
+        buffer.append(location)
+        if buffer.count > maxSize {
+            buffer = Array(buffer.suffix(maxSize))
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: buffer) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    static func load() -> [[String: Any]] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return arr
+    }
+
+    static func flush() -> [[String: Any]] {
+        let buf = load()
+        UserDefaults.standard.removeObject(forKey: key)
+        return buf
+    }
+}
+
+// MARK: - LocationService
+
+/// Production-grade CLLocationManager wrapper with background tracking,
+/// heartbeat, significant location changes, motion-aware accuracy,
+/// and app termination recovery.
+final class LocationService: NSObject, CLLocationManagerDelegate {
+
+    // MARK: Public State
+
+    private(set) var isTracking = false
+    private(set) var isMoving = true
+
+    // MARK: Private
+
     private let locationManager = CLLocationManager()
     private var onPosition: (([String: Any]) -> Void)?
-    private var oneShotCallback: (([String: Any]) -> Void)?
-    private var permissionCallback: ((Int) -> Void)?
-    private(set) var isTracking = false
-    private var currentMode = 1
+    private var onProviderChange: (([String: Any]) -> Void)?
+    private var onMotionChange: (([String: Any]) -> Void)?
 
-    init(onPosition: @escaping ([String: Any]) -> Void) {
+    private var oneShotCallbacks: [(([String: Any]) -> Void)] = []
+    private var oneShotSamples: [[String: Any]] = []
+    private var oneShotSamplesNeeded: Int = 1
+    private var oneShotTimeout: Timer?
+    private var oneShotAccuracy: CLLocationAccuracy = kCLLocationAccuracyBest
+    private var oneShotMaxAge: TimeInterval = 0
+
+    private var permissionCallback: ((Int) -> Void)?
+
+    private var config = LocationServiceConfig()
+
+    // Heartbeat
+    private var heartbeatTimer: Timer?
+    private var lastEmittedLocation: CLLocation?
+    private var preventSuspendTimer: Timer?
+
+    // Stop detection
+    private var lastMovementDate = Date()
+    private var stopDetectionTimer: Timer?
+
+    // State persistence
+    private static let isTrackingKey = "libre_location_is_tracking"
+
+    // MARK: - Init
+
+    init(onPosition: @escaping ([String: Any]) -> Void,
+         onProviderChange: (([String: Any]) -> Void)? = nil,
+         onMotionChange: (([String: Any]) -> Void)? = nil) {
         self.onPosition = onPosition
+        self.onProviderChange = onProviderChange
+        self.onMotionChange = onMotionChange
         super.init()
         locationManager.delegate = self
     }
 
-    func startTracking(accuracy: Int, intervalMs: Int, distanceFilter: Double, mode: Int) {
-        currentMode = mode
-        isTracking = true
+    // MARK: - App Termination Recovery
 
-        switch accuracy {
-        case 0: locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        case 1: locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        case 2: locationManager.desiredAccuracy = kCLLocationAccuracyKilometer
-        default: locationManager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        }
+    /// Call from `application(_:didFinishLaunchingWithOptions:)` or plugin registration
+    /// to restore tracking after the OS relaunches the app due to significant location change.
+    func restoreTrackingIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: Self.isTrackingKey),
+              let saved = LocationServiceConfig.load()
+        else { return }
+        config = saved
+        applyConfigAndStart()
+        LibreLocationPlugin.log("Restored tracking after app relaunch")
+    }
 
-        locationManager.distanceFilter = distanceFilter
-        locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.pausesLocationUpdatesAutomatically = false
-        locationManager.showsBackgroundLocationIndicator = true
+    // MARK: - Start / Stop
 
-        switch mode {
-        case 0: // Active
-            locationManager.startUpdatingLocation()
-        case 1: // Balanced
-            locationManager.startUpdatingLocation()
-        case 2: // Passive
-            locationManager.startMonitoringSignificantLocationChanges()
-        default:
-            locationManager.startUpdatingLocation()
-        }
+    func startTracking(
+        accuracy: Int,
+        intervalMs: Int,
+        distanceFilter: Double,
+        mode: Int,
+        enableMotionDetection: Bool = true
+    ) {
+        config.accuracy = accuracy
+        config.intervalMs = intervalMs
+        config.distanceFilter = distanceFilter
+        config.mode = mode
+        config.enableMotionDetection = enableMotionDetection
+        config.save()
+        UserDefaults.standard.set(true, forKey: Self.isTrackingKey)
+
+        applyConfigAndStart()
     }
 
     func stopTracking() {
         isTracking = false
+        UserDefaults.standard.set(false, forKey: Self.isTrackingKey)
+        LocationServiceConfig.clear()
+
         locationManager.stopUpdatingLocation()
         locationManager.stopMonitoringSignificantLocationChanges()
+        stopHeartbeat()
+        stopPreventSuspend()
+        stopStopDetectionTimer()
     }
 
-    func getCurrentPosition(accuracy: Int, callback: @escaping ([String: Any]) -> Void) {
-        oneShotCallback = callback
-        locationManager.desiredAccuracy = accuracy == 0
-            ? kCLLocationAccuracyBest
-            : kCLLocationAccuracyHundredMeters
-        locationManager.requestLocation()
+    /// Dynamically update configuration without stopping/starting.
+    func setConfig(_ args: [String: Any]) {
+        if let v = args["accuracy"] as? Int { config.accuracy = v }
+        if let v = args["intervalMs"] as? Int { config.intervalMs = v }
+        if let v = args["distanceFilter"] as? Double { config.distanceFilter = v }
+        if let v = args["mode"] as? Int { config.mode = v }
+        if let v = args["enableMotionDetection"] as? Bool { config.enableMotionDetection = v }
+        if let v = args["stopTimeout"] as? Int { config.stopTimeout = v }
+        if let v = args["stationaryRadius"] as? Double { config.stationaryRadius = v }
+        if let v = args["heartbeatInterval"] as? Int { config.heartbeatInterval = v }
+        if let v = args["pausesLocationUpdatesAutomatically"] as? Bool {
+            config.pausesLocationUpdatesAutomatically = v
+        }
+        if let v = args["activityType"] as? Int { config.activityType = v }
+        if let v = args["stopOnTerminate"] as? Bool { config.stopOnTerminate = v }
+        if let v = args["preventSuspend"] as? Bool { config.preventSuspend = v }
+        if let v = args["useSignificantChangesOnly"] as? Bool { config.useSignificantChangesOnly = v }
+        if let v = args["showsBackgroundLocationIndicator"] as? Bool {
+            config.showsBackgroundLocationIndicator = v
+        }
+
+        config.save()
+
+        if isTracking {
+            applyConfigAndStart()
+        }
     }
+
+    // MARK: - getCurrentPosition
+
+    func getCurrentPosition(
+        accuracy: Int,
+        samples: Int = 1,
+        timeout: Int = 30,
+        maximumAge: Int = 0,
+        callback: @escaping ([String: Any]) -> Void
+    ) {
+        // Check cached location first if maximumAge > 0
+        if maximumAge > 0, let cached = lastEmittedLocation {
+            let age = Date().timeIntervalSince(cached.timestamp)
+            if age <= Double(maximumAge) / 1000.0 {
+                callback(locationToMap(cached))
+                return
+            }
+        }
+
+        oneShotSamplesNeeded = max(1, samples)
+        oneShotSamples = []
+        oneShotCallbacks.append(callback)
+
+        switch accuracy {
+        case 0: oneShotAccuracy = kCLLocationAccuracyBest
+        case 1: oneShotAccuracy = kCLLocationAccuracyNearestTenMeters
+        case 2: oneShotAccuracy = kCLLocationAccuracyHundredMeters
+        default: oneShotAccuracy = kCLLocationAccuracyKilometer
+        }
+
+        oneShotMaxAge = Double(maximumAge) / 1000.0
+
+        // Use requestLocation for one-shot
+        let savedAccuracy = locationManager.desiredAccuracy
+        locationManager.desiredAccuracy = oneShotAccuracy
+        locationManager.requestLocation()
+
+        // Timeout
+        oneShotTimeout?.invalidate()
+        oneShotTimeout = Timer.scheduledTimer(withTimeInterval: TimeInterval(timeout), repeats: false) { [weak self] _ in
+            self?.resolveOneShot()
+        }
+
+        // Restore accuracy after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            if self?.isTracking == true {
+                self?.locationManager.desiredAccuracy = savedAccuracy
+            }
+        }
+    }
+
+    // MARK: - Motion State
 
     func onMotionDetected() {
-        guard isTracking, currentMode == 1 else { return }
-        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        guard isTracking else { return }
+        lastMovementDate = Date()
+
+        if !isMoving {
+            isMoving = true
+            onMotionChange?(["isMoving": true])
+
+            // Switch to active GPS
+            locationManager.desiredAccuracy = accuracyForConfig()
+            locationManager.distanceFilter = config.distanceFilter
+
+            if config.mode == 2 {
+                // Was in passive/significant-only mode, switch to standard
+                locationManager.stopMonitoringSignificantLocationChanges()
+                locationManager.startUpdatingLocation()
+            }
+        }
+
+        restartStopDetectionTimer()
     }
 
     func onStillnessDetected() {
-        guard isTracking, currentMode == 1 else { return }
-        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        guard isTracking else { return }
+        // Don't immediately go stationary; let stopTimeout handle it
     }
 
+    // MARK: - Permissions
+
     func checkPermission() -> Int {
+        return permissionInt()
+    }
+
+    func requestPermission(callback: @escaping (Int) -> Void) {
+        permissionCallback = callback
+
+        let status = permissionInt()
+        if status == 0 {
+            // Not determined — request WhenInUse first, then Always
+            locationManager.requestWhenInUseAuthorization()
+        } else if status == 2 {
+            // WhenInUse granted — escalate to Always
+            locationManager.requestAlwaysAuthorization()
+        } else {
+            callback(status)
+        }
+    }
+
+    // MARK: - CLLocationManagerDelegate
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+
+        // Filter out old/inaccurate readings
+        let age = abs(location.timestamp.timeIntervalSinceNow)
+        if age > 30 && oneShotCallbacks.isEmpty {
+            return  // stale
+        }
+
+        let data = locationToMap(location)
+        lastEmittedLocation = location
+
+        // One-shot handling
+        if !oneShotCallbacks.isEmpty {
+            oneShotSamples.append(data)
+            if oneShotSamples.count >= oneShotSamplesNeeded {
+                resolveOneShot()
+            }
+            return
+        }
+
+        // Regular tracking emission
+        onPosition?(data)
+
+        // Buffer for persistence
+        LocationBuffer.append(data)
+
+        // Update movement timestamp if actually moving
+        if location.speed > 0.5 {
+            lastMovementDate = Date()
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        LibreLocationPlugin.log("Location error: \(error.localizedDescription)")
+
+        // Resolve one-shot with error if pending
+        if !oneShotCallbacks.isEmpty && oneShotSamples.isEmpty {
+            // Don't fail yet — requestLocation may retry
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let perm = permissionInt()
+
+        // Handle permission callback
+        if let cb = permissionCallback {
+            if perm == 2 {
+                // Got WhenInUse, escalate to Always
+                locationManager.requestAlwaysAuthorization()
+            } else {
+                cb(perm)
+                permissionCallback = nil
+            }
+        }
+
+        // Emit provider change
+        var info: [String: Any] = [
+            "permission": perm,
+            "enabled": CLLocationManager.locationServicesEnabled(),
+        ]
+        if #available(iOS 14.0, *) {
+            info["accuracyAuthorization"] = manager.accuracyAuthorization.rawValue
+        }
+        onProviderChange?(info)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFinishDeferredUpdatesWithError error: Error?) {
+        if let error = error {
+            LibreLocationPlugin.log("Deferred update error: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Private: Config Application
+
+    private func applyConfigAndStart() {
+        isTracking = true
+        isMoving = true
+        lastMovementDate = Date()
+
+        // Core settings
+        locationManager.desiredAccuracy = accuracyForConfig()
+        locationManager.distanceFilter = config.distanceFilter
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.showsBackgroundLocationIndicator = config.showsBackgroundLocationIndicator
+        locationManager.pausesLocationUpdatesAutomatically = config.pausesLocationUpdatesAutomatically
+
+        if let actType = CLActivityType(rawValue: config.activityType) {
+            locationManager.activityType = actType
+        }
+
+        // Stop existing updates
+        locationManager.stopUpdatingLocation()
+        locationManager.stopMonitoringSignificantLocationChanges()
+
+        // Start based on mode
+        if config.useSignificantChangesOnly || config.mode == 2 {
+            locationManager.startMonitoringSignificantLocationChanges()
+        } else {
+            locationManager.startUpdatingLocation()
+            // Also start significant changes as a fallback for termination recovery
+            if !config.stopOnTerminate {
+                locationManager.startMonitoringSignificantLocationChanges()
+            }
+        }
+
+        // Heartbeat
+        configureHeartbeat()
+
+        // Prevent suspend
+        if config.preventSuspend {
+            startPreventSuspend()
+        } else {
+            stopPreventSuspend()
+        }
+
+        // Stop detection
+        if config.stopTimeout > 0 {
+            restartStopDetectionTimer()
+        }
+
+        // Attempt deferred updates for battery savings
+        attemptDeferredUpdates()
+    }
+
+    private func accuracyForConfig() -> CLLocationAccuracy {
+        switch config.accuracy {
+        case 0: return kCLLocationAccuracyBest
+        case 1: return kCLLocationAccuracyNearestTenMeters
+        case 2: return kCLLocationAccuracyHundredMeters
+        case 3: return kCLLocationAccuracyKilometer
+        default: return kCLLocationAccuracyBest
+        }
+    }
+
+    // MARK: - Heartbeat
+
+    private func configureHeartbeat() {
+        stopHeartbeat()
+
+        guard config.heartbeatInterval > 0 else { return }
+
+        heartbeatTimer = Timer.scheduledTimer(
+            withTimeInterval: TimeInterval(config.heartbeatInterval),
+            repeats: true
+        ) { [weak self] _ in
+            self?.emitHeartbeat()
+        }
+    }
+
+    private func emitHeartbeat() {
+        guard isTracking else { return }
+
+        if let loc = lastEmittedLocation {
+            var data = locationToMap(loc)
+            data["isHeartbeat"] = true
+            onPosition?(data)
+        } else {
+            // Request a fresh location
+            locationManager.requestLocation()
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+    }
+
+    // MARK: - Prevent Suspend
+
+    /// Uses a silent audio or timer trick to prevent iOS from suspending the app.
+    /// This keeps the heartbeat timer alive in the background.
+    private func startPreventSuspend() {
+        stopPreventSuspend()
+        // Periodic requestLocation keeps the app alive
+        preventSuspendTimer = Timer.scheduledTimer(
+            withTimeInterval: 60.0,
+            repeats: true
+        ) { [weak self] _ in
+            guard self?.isTracking == true else { return }
+            self?.locationManager.requestLocation()
+        }
+    }
+
+    private func stopPreventSuspend() {
+        preventSuspendTimer?.invalidate()
+        preventSuspendTimer = nil
+    }
+
+    // MARK: - Stop Detection
+
+    private func restartStopDetectionTimer() {
+        stopStopDetectionTimer()
+        guard config.stopTimeout > 0 else { return }
+
+        let timeout = TimeInterval(config.stopTimeout * 60)
+        stopDetectionTimer = Timer.scheduledTimer(
+            withTimeInterval: timeout,
+            repeats: false
+        ) { [weak self] _ in
+            self?.handleStopTimeout()
+        }
+    }
+
+    private func stopStopDetectionTimer() {
+        stopDetectionTimer?.invalidate()
+        stopDetectionTimer = nil
+    }
+
+    private func handleStopTimeout() {
+        guard isTracking, isMoving else { return }
+
+        let elapsed = Date().timeIntervalSince(lastMovementDate)
+        let timeout = TimeInterval(config.stopTimeout * 60)
+
+        if elapsed >= timeout {
+            isMoving = false
+            onMotionChange?(["isMoving": false])
+
+            // Reduce power: switch to lower accuracy or significant changes
+            if config.mode != 0 {
+                locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+                locationManager.distanceFilter = max(config.stationaryRadius, 50.0)
+            }
+        }
+    }
+
+    // MARK: - Deferred Updates
+
+    private func attemptDeferredUpdates() {
+        // Deferred updates are deprecated in iOS 13+ but we attempt if available
+        if CLLocationManager.deferredLocationUpdatesAvailable() {
+            let distance = max(config.distanceFilter * 10, 100.0)
+            let timeout = TimeInterval(config.intervalMs) / 1000.0
+            locationManager.allowDeferredLocationUpdates(untilTraveled: distance, timeout: timeout)
+        }
+    }
+
+    // MARK: - One-Shot Resolution
+
+    private func resolveOneShot() {
+        oneShotTimeout?.invalidate()
+        oneShotTimeout = nil
+
+        guard !oneShotCallbacks.isEmpty else { return }
+
+        let result: [String: Any]
+        if oneShotSamples.count > 1 {
+            result = averageSamples(oneShotSamples)
+        } else if let first = oneShotSamples.first {
+            result = first
+        } else if let cached = lastEmittedLocation {
+            result = locationToMap(cached)
+        } else {
+            // No location available
+            for cb in oneShotCallbacks {
+                cb(["error": "NO_LOCATION"])
+            }
+            oneShotCallbacks.removeAll()
+            oneShotSamples.removeAll()
+            return
+        }
+
+        for cb in oneShotCallbacks {
+            cb(result)
+        }
+        oneShotCallbacks.removeAll()
+        oneShotSamples.removeAll()
+    }
+
+    private func averageSamples(_ samples: [[String: Any]]) -> [String: Any] {
+        guard !samples.isEmpty else { return [:] }
+
+        var lat = 0.0, lng = 0.0, alt = 0.0, acc = 0.0, spd = 0.0, hdg = 0.0
+        let n = Double(samples.count)
+
+        for s in samples {
+            lat += (s["latitude"] as? Double) ?? 0
+            lng += (s["longitude"] as? Double) ?? 0
+            alt += (s["altitude"] as? Double) ?? 0
+            acc += (s["accuracy"] as? Double) ?? 0
+            spd += (s["speed"] as? Double) ?? 0
+            hdg += (s["heading"] as? Double) ?? 0
+        }
+
+        return [
+            "latitude": lat / n,
+            "longitude": lng / n,
+            "altitude": alt / n,
+            "accuracy": acc / n,
+            "speed": spd / n,
+            "heading": hdg / n,
+            "timestamp": samples.last?["timestamp"] ?? Int64(Date().timeIntervalSince1970 * 1000),
+            "provider": "core_location",
+        ]
+    }
+
+    // MARK: - Permission Helpers
+
+    private func permissionInt() -> Int {
         let status: CLAuthorizationStatus
         if #available(iOS 14.0, *) {
             status = locationManager.authorizationStatus
@@ -76,43 +607,17 @@ class LocationService: NSObject, CLLocationManagerDelegate {
         }
 
         switch status {
-        case .notDetermined, .denied: return 0
-        case .restricted: return 1  // deniedForever
+        case .notDetermined: return 0        // denied (not yet asked)
+        case .denied, .restricted: return 1  // deniedForever
         case .authorizedWhenInUse: return 2
         case .authorizedAlways: return 3
         @unknown default: return 0
         }
     }
 
-    func requestPermission(callback: @escaping (Int) -> Void) {
-        permissionCallback = callback
-        locationManager.requestAlwaysAuthorization()
-    }
+    // MARK: - Helpers
 
-    // MARK: - CLLocationManagerDelegate
-
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
-        let data = locationToMap(location)
-
-        if let cb = oneShotCallback {
-            cb(data)
-            oneShotCallback = nil
-        } else {
-            onPosition?(data)
-        }
-    }
-
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        // Silently handle errors — position stream continues
-    }
-
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        permissionCallback?(checkPermission())
-        permissionCallback = nil
-    }
-
-    private func locationToMap(_ location: CLLocation) -> [String: Any] {
+    func locationToMap(_ location: CLLocation) -> [String: Any] {
         return [
             "latitude": location.coordinate.latitude,
             "longitude": location.coordinate.longitude,

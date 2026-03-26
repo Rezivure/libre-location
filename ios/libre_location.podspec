@@ -14,4 +14,12 @@ CoreLocation on iOS, AOSP LocationManager on Android. No proprietary SDKs.
   s.dependency 'Flutter'
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
+
+  s.frameworks       = 'CoreLocation', 'CoreMotion'
+
+  # Required Info.plist keys (must be added by the host app):
+  #   NSLocationAlwaysAndWhenInUseUsageDescription
+  #   NSLocationWhenInUseUsageDescription
+  #   NSMotionUsageDescription
+  #   UIBackgroundModes: [location]
 end

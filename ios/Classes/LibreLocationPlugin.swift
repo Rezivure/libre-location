@@ -1,15 +1,52 @@
 import Flutter
 import UIKit
 
-/// Flutter plugin for background location tracking using CoreLocation.
-/// Zero Google Play Services dependencies.
+/// Flutter plugin for production-grade background location tracking on iOS.
+///
+/// Capabilities:
+/// - Background location with `allowsBackgroundLocationUpdates`
+/// - Significant location change monitoring for termination recovery
+/// - CMMotionActivity-based motion detection with confidence
+/// - Heartbeat (periodic location emission even when stationary)
+/// - Dynamic config changes at runtime via `setConfig()`
+/// - `getCurrentPosition` with multi-sample averaging, timeout, maximumAge
+/// - Geofencing with enter/exit/dwell, persistence, and LRU eviction
+/// - Provider/authorization change notifications
+/// - Local persistence for config and location buffering
+///
+/// Required Info.plist keys:
+/// - NSLocationAlwaysAndWhenInUseUsageDescription
+/// - NSLocationWhenInUseUsageDescription
+/// - NSMotionUsageDescription
+/// - UIBackgroundModes: [location]
 public class LibreLocationPlugin: NSObject, FlutterPlugin {
+
+    // MARK: - Properties
+
     private var locationService: LocationService?
     private var motionDetector: MotionDetectorService?
     private var geofenceManager: GeofenceManagerService?
 
     private var positionStreamHandler: StreamHandler?
     private var geofenceStreamHandler: StreamHandler?
+    private var providerStreamHandler: StreamHandler?
+    private var activityStreamHandler: StreamHandler?
+    private var motionChangeStreamHandler: StreamHandler?
+
+    // Logging
+    static var enableLogging = false
+
+    static func log(_ message: String) {
+        #if DEBUG
+        print("[LibreLocation] \(message)")
+        #else
+        if enableLogging {
+            print("[LibreLocation] \(message)")
+        }
+        #endif
+    }
+
+    // MARK: - Plugin Registration
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
@@ -18,23 +55,53 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         )
         let instance = LibreLocationPlugin()
 
+        // Position stream
         instance.positionStreamHandler = StreamHandler()
-        let positionChannel = FlutterEventChannel(
+        FlutterEventChannel(
             name: "libre_location/position",
             binaryMessenger: registrar.messenger()
-        )
-        positionChannel.setStreamHandler(instance.positionStreamHandler)
+        ).setStreamHandler(instance.positionStreamHandler)
 
+        // Geofence stream
         instance.geofenceStreamHandler = StreamHandler()
-        let geofenceChannel = FlutterEventChannel(
+        FlutterEventChannel(
             name: "libre_location/geofence",
             binaryMessenger: registrar.messenger()
-        )
-        geofenceChannel.setStreamHandler(instance.geofenceStreamHandler)
+        ).setStreamHandler(instance.geofenceStreamHandler)
 
-        instance.locationService = LocationService { position in
-            instance.positionStreamHandler?.send(position)
-        }
+        // Provider change stream
+        instance.providerStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/provider",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.providerStreamHandler)
+
+        // Activity change stream
+        instance.activityStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/activity",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.activityStreamHandler)
+
+        // Motion change stream
+        instance.motionChangeStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/motion_change",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.motionChangeStreamHandler)
+
+        // Initialize services
+        instance.locationService = LocationService(
+            onPosition: { position in
+                instance.positionStreamHandler?.send(position)
+            },
+            onProviderChange: { info in
+                instance.providerStreamHandler?.send(info)
+            },
+            onMotionChange: { info in
+                instance.motionChangeStreamHandler?.send(info)
+            }
+        )
 
         instance.geofenceManager = GeofenceManagerService { event in
             instance.geofenceStreamHandler?.send(event)
@@ -42,14 +109,33 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
 
         instance.motionDetector = MotionDetectorService()
 
+        // Restore tracking if app was relaunched by the OS
+        instance.locationService?.restoreTrackingIfNeeded()
+
+        // Flush any buffered locations from before termination
+        let buffered = LocationBuffer.flush()
+        for loc in buffered {
+            instance.positionStreamHandler?.send(loc)
+        }
+
         registrar.addMethodCallDelegate(instance, channel: channel)
+        registrar.addApplicationDelegate(instance)
+
+        log("Plugin registered")
     }
 
+    // MARK: - Method Call Handler
+
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any]
+
         switch call.method {
+
+        // ── Tracking ──────────────────────────────────────────────
+
         case "startTracking":
-            guard let args = call.arguments as? [String: Any] else {
-                result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+            guard let args = args else {
+                result(FlutterError(code: "INVALID_ARGS", message: "Expected map arguments", details: nil))
                 return
             }
             let accuracy = args["accuracy"] as? Int ?? 0
@@ -62,17 +148,23 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 accuracy: accuracy,
                 intervalMs: intervalMs,
                 distanceFilter: distanceFilter,
-                mode: mode
+                mode: mode,
+                enableMotionDetection: enableMotion
             )
 
             if enableMotion {
-                motionDetector?.start { [weak self] isMoving in
-                    if isMoving {
-                        self?.locationService?.onMotionDetected()
-                    } else {
-                        self?.locationService?.onStillnessDetected()
+                motionDetector?.start(
+                    onMotionChanged: { [weak self] isMoving in
+                        if isMoving {
+                            self?.locationService?.onMotionDetected()
+                        } else {
+                            self?.locationService?.onStillnessDetected()
+                        }
+                    },
+                    onActivityChanged: { [weak self] activity in
+                        self?.activityStreamHandler?.send(activity)
                     }
-                }
+                )
             }
 
             result(nil)
@@ -82,41 +174,82 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             motionDetector?.stop()
             result(nil)
 
-        case "getCurrentPosition":
-            let args = call.arguments as? [String: Any]
-            let accuracy = args?["accuracy"] as? Int ?? 0
-            locationService?.getCurrentPosition(accuracy: accuracy) { position in
-                result(position)
-            }
-
         case "isTracking":
             result(locationService?.isTracking ?? false)
 
+        // ── Dynamic Config ────────────────────────────────────────
+
+        case "setConfig":
+            guard let args = args else {
+                result(FlutterError(code: "INVALID_ARGS", message: "Expected map arguments", details: nil))
+                return
+            }
+            locationService?.setConfig(args)
+
+            // Update motion detector if relevant config changed
+            if let delay = args["motionTriggerDelay"] as? Double {
+                motionDetector?.configure(motionTriggerDelay: delay)
+            }
+            if let disable = args["disableMotionActivityUpdates"] as? Bool {
+                motionDetector?.configure(disableMotionActivityUpdates: disable)
+            }
+
+            result(nil)
+
+        // ── Current Position ──────────────────────────────────────
+
+        case "getCurrentPosition":
+            let accuracy = args?["accuracy"] as? Int ?? 0
+            let samples = args?["samples"] as? Int ?? 1
+            let timeout = args?["timeout"] as? Int ?? 30
+            let maximumAge = args?["maximumAge"] as? Int ?? 0
+
+            locationService?.getCurrentPosition(
+                accuracy: accuracy,
+                samples: samples,
+                timeout: timeout,
+                maximumAge: maximumAge
+            ) { position in
+                if position["error"] != nil {
+                    result(FlutterError(code: "LOCATION_ERROR", message: "Could not get position", details: nil))
+                } else {
+                    result(position)
+                }
+            }
+
+        // ── Geofencing ───────────────────────────────────────────
+
         case "addGeofence":
-            guard let args = call.arguments as? [String: Any] else {
+            guard let args = args else {
                 result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
                 return
             }
             geofenceManager?.addGeofence(
-                id: args["id"] as! String,
-                latitude: args["latitude"] as! Double,
-                longitude: args["longitude"] as! Double,
-                radiusMeters: args["radiusMeters"] as! Double,
+                id: args["id"] as? String ?? "",
+                latitude: args["latitude"] as? Double ?? 0,
+                longitude: args["longitude"] as? Double ?? 0,
+                radiusMeters: args["radiusMeters"] as? Double ?? 100,
                 triggers: args["triggers"] as? [Int] ?? [0, 1],
                 dwellDurationMs: args["dwellDurationMs"] as? Int
             )
             result(nil)
 
         case "removeGeofence":
-            guard let args = call.arguments as? [String: Any] else {
+            guard let id = args?["id"] as? String else {
                 result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
                 return
             }
-            geofenceManager?.removeGeofence(id: args["id"] as! String)
+            geofenceManager?.removeGeofence(id: id)
+            result(nil)
+
+        case "removeAllGeofences":
+            geofenceManager?.removeAllGeofences()
             result(nil)
 
         case "getGeofences":
             result(geofenceManager?.getGeofences() ?? [])
+
+        // ── Permissions ──────────────────────────────────────────
 
         case "checkPermission":
             result(locationService?.checkPermission() ?? 0)
@@ -126,18 +259,43 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 result(status)
             }
 
+        // ── State Queries ────────────────────────────────────────
+
+        case "isMoving":
+            result(locationService?.isMoving ?? false)
+
+        case "getBufferedLocations":
+            result(LocationBuffer.flush())
+
         default:
             result(FlutterMethodNotImplemented)
         }
     }
+
+    // MARK: - Application Delegate
+
+    /// Handle app termination — if stopOnTerminate is false, significant location
+    /// changes will relaunch the app and `restoreTrackingIfNeeded()` handles recovery.
+    public func applicationWillTerminate(_ application: UIApplication) {
+        Self.log("App terminating — tracking will be restored via significant location changes if configured")
+    }
 }
 
-/// Generic EventChannel stream handler.
+// MARK: - StreamHandler
+
+/// Generic EventChannel stream handler for sending events to Dart.
 class StreamHandler: NSObject, FlutterStreamHandler {
     private var eventSink: FlutterEventSink?
+    private var pendingEvents: [Any] = []
+    private let maxPending = 100
 
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         eventSink = events
+        // Flush any pending events
+        for event in pendingEvents {
+            events(event)
+        }
+        pendingEvents.removeAll()
         return nil
     }
 
@@ -147,6 +305,13 @@ class StreamHandler: NSObject, FlutterStreamHandler {
     }
 
     func send(_ data: Any) {
-        eventSink?(data)
+        if let sink = eventSink {
+            sink(data)
+        } else {
+            // Buffer events until a listener attaches
+            if pendingEvents.count < maxPending {
+                pendingEvents.append(data)
+            }
+        }
     }
 }
