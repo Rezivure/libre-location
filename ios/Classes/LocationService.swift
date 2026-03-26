@@ -88,6 +88,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private var onPosition: (([String: Any]) -> Void)?
     private var onProviderChange: (([String: Any]) -> Void)?
     private var onMotionChange: (([String: Any]) -> Void)?
+    private var onHeartbeat: (([String: Any]) -> Void)?
 
     private var oneShotCallbacks: [(([String: Any]) -> Void)] = []
     private var oneShotSamples: [[String: Any]] = []
@@ -116,18 +117,18 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     init(onPosition: @escaping ([String: Any]) -> Void,
          onProviderChange: (([String: Any]) -> Void)? = nil,
-         onMotionChange: (([String: Any]) -> Void)? = nil) {
+         onMotionChange: (([String: Any]) -> Void)? = nil,
+         onHeartbeat: (([String: Any]) -> Void)? = nil) {
         self.onPosition = onPosition
         self.onProviderChange = onProviderChange
         self.onMotionChange = onMotionChange
+        self.onHeartbeat = onHeartbeat
         super.init()
         locationManager.delegate = self
     }
 
     // MARK: - App Termination Recovery
 
-    /// Call from `application(_:didFinishLaunchingWithOptions:)` or plugin registration
-    /// to restore tracking after the OS relaunches the app due to significant location change.
     func restoreTrackingIfNeeded() {
         guard UserDefaults.standard.bool(forKey: Self.isTrackingKey),
               let saved = LocationServiceConfig.load()
@@ -223,7 +224,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         case 0: oneShotAccuracy = kCLLocationAccuracyBest
         case 1: oneShotAccuracy = kCLLocationAccuracyNearestTenMeters
         case 2: oneShotAccuracy = kCLLocationAccuracyHundredMeters
-        default: oneShotAccuracy = kCLLocationAccuracyKilometer
+        case 3: oneShotAccuracy = kCLLocationAccuracyKilometer
+        case 4: oneShotAccuracy = kCLLocationAccuracyBestForNavigation
+        default: oneShotAccuracy = kCLLocationAccuracyBest
         }
 
         oneShotMaxAge = Double(maximumAge) / 1000.0
@@ -233,7 +236,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         locationManager.desiredAccuracy = oneShotAccuracy
         locationManager.requestLocation()
 
-        // Timeout
+        // Timeout (timeout is in seconds from Dart)
         oneShotTimeout?.invalidate()
         oneShotTimeout = Timer.scheduledTimer(withTimeInterval: TimeInterval(timeout), repeats: false) { [weak self] _ in
             self?.resolveOneShot()
@@ -255,14 +258,15 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         if !isMoving {
             isMoving = true
-            onMotionChange?(["isMoving": true])
+
+            // Emit motion change with current position
+            emitMotionChange(isMoving: true)
 
             // Switch to active GPS
             locationManager.desiredAccuracy = accuracyForConfig()
             locationManager.distanceFilter = config.distanceFilter
 
             if config.mode == 2 {
-                // Was in passive/significant-only mode, switch to standard
                 locationManager.stopMonitoringSignificantLocationChanges()
                 locationManager.startUpdatingLocation()
             }
@@ -335,9 +339,17 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         LibreLocationPlugin.log("Location error: \(error.localizedDescription)")
 
-        // Resolve one-shot with error if pending
+        // If one-shot is pending and we have no samples, resolve with error
         if !oneShotCallbacks.isEmpty && oneShotSamples.isEmpty {
-            // Don't fail yet — requestLocation may retry
+            // Check if it's a definitive error
+            if let clError = error as? CLError {
+                switch clError.code {
+                case .denied, .network:
+                    resolveOneShotWithError()
+                default:
+                    break // requestLocation may retry
+                }
+            }
         }
     }
 
@@ -355,14 +367,13 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             }
         }
 
-        // Emit provider change
-        var info: [String: Any] = [
-            "permission": perm,
+        // Emit provider change — format must match Dart ProviderEvent
+        let info: [String: Any] = [
             "enabled": CLLocationManager.locationServicesEnabled(),
+            "status": perm,
+            "gps": CLLocationManager.locationServicesEnabled(),
+            "network": CLLocationManager.locationServicesEnabled(),
         ]
-        if #available(iOS 14.0, *) {
-            info["accuracyAuthorization"] = manager.accuracyAuthorization.rawValue
-        }
         onProviderChange?(info)
     }
 
@@ -430,6 +441,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         case 1: return kCLLocationAccuracyNearestTenMeters
         case 2: return kCLLocationAccuracyHundredMeters
         case 3: return kCLLocationAccuracyKilometer
+        case 4: return kCLLocationAccuracyBestForNavigation
         default: return kCLLocationAccuracyBest
         }
     }
@@ -453,9 +465,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         guard isTracking else { return }
 
         if let loc = lastEmittedLocation {
-            var data = locationToMap(loc)
-            data["isHeartbeat"] = true
-            onPosition?(data)
+            let positionData = locationToMap(loc)
+            // Emit on heartbeat channel with nested position (matches Dart HeartbeatEvent)
+            let heartbeatData: [String: Any] = [
+                "position": positionData,
+            ]
+            onHeartbeat?(heartbeatData)
         } else {
             // Request a fresh location
             locationManager.requestLocation()
@@ -469,11 +484,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Prevent Suspend
 
-    /// Uses a silent audio or timer trick to prevent iOS from suspending the app.
-    /// This keeps the heartbeat timer alive in the background.
     private func startPreventSuspend() {
         stopPreventSuspend()
-        // Periodic requestLocation keeps the app alive
         preventSuspendTimer = Timer.scheduledTimer(
             withTimeInterval: 60.0,
             repeats: true
@@ -488,12 +500,40 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         preventSuspendTimer = nil
     }
 
+    // MARK: - Motion Change Emission
+
+    /// Emits a motion change event containing the current position with isMoving flag.
+    /// This must match Dart's Position.fromMap() format since motionChangeStream maps to Stream<Position>.
+    private func emitMotionChange(isMoving: Bool) {
+        var data: [String: Any]
+        if let loc = lastEmittedLocation {
+            data = locationToMap(loc)
+        } else {
+            // No position available yet — emit a minimal position
+            data = [
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "altitude": 0.0,
+                "accuracy": 0.0,
+                "speed": 0.0,
+                "heading": 0.0,
+                "timestamp": Int64(Date().timeIntervalSince1970 * 1000),
+                "provider": "core_location",
+                "isMoving": isMoving,
+            ]
+            return // Don't emit if we have no real position
+        }
+        data["isMoving"] = isMoving
+        onMotionChange?(data)
+    }
+
     // MARK: - Stop Detection
 
     private func restartStopDetectionTimer() {
         stopStopDetectionTimer()
         guard config.stopTimeout > 0 else { return }
 
+        // stopTimeout is in minutes (from Dart)
         let timeout = TimeInterval(config.stopTimeout * 60)
         stopDetectionTimer = Timer.scheduledTimer(
             withTimeInterval: timeout,
@@ -516,7 +556,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         if elapsed >= timeout {
             isMoving = false
-            onMotionChange?(["isMoving": false])
+
+            // Emit motion change with position
+            emitMotionChange(isMoving: false)
 
             // Reduce power: switch to lower accuracy or significant changes
             if config.mode != 0 {
@@ -529,7 +571,6 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // MARK: - Deferred Updates
 
     private func attemptDeferredUpdates() {
-        // Deferred updates are deprecated in iOS 13+ but we attempt if available
         if CLLocationManager.deferredLocationUpdatesAvailable() {
             let distance = max(config.distanceFilter * 10, 100.0)
             let timeout = TimeInterval(config.intervalMs) / 1000.0
@@ -553,17 +594,20 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         } else if let cached = lastEmittedLocation {
             result = locationToMap(cached)
         } else {
-            // No location available
-            for cb in oneShotCallbacks {
-                cb(["error": "NO_LOCATION"])
-            }
-            oneShotCallbacks.removeAll()
-            oneShotSamples.removeAll()
+            resolveOneShotWithError()
             return
         }
 
         for cb in oneShotCallbacks {
             cb(result)
+        }
+        oneShotCallbacks.removeAll()
+        oneShotSamples.removeAll()
+    }
+
+    private func resolveOneShotWithError() {
+        for cb in oneShotCallbacks {
+            cb(["error": "NO_LOCATION"])
         }
         oneShotCallbacks.removeAll()
         oneShotSamples.removeAll()
@@ -593,12 +637,15 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             "heading": hdg / n,
             "timestamp": samples.last?["timestamp"] ?? Int64(Date().timeIntervalSince1970 * 1000),
             "provider": "core_location",
+            "isMoving": isMoving,
         ]
     }
 
     // MARK: - Permission Helpers
 
     private func permissionInt() -> Int {
+        // Returns int matching Dart LocationPermission enum:
+        // 0 = denied, 1 = deniedForever, 2 = whileInUse, 3 = always
         let status: CLAuthorizationStatus
         if #available(iOS 14.0, *) {
             status = locationManager.authorizationStatus
@@ -627,6 +674,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             "heading": max(0, location.course),
             "timestamp": Int64(location.timestamp.timeIntervalSince1970 * 1000),
             "provider": "core_location",
+            "isMoving": isMoving,
         ]
     }
 }

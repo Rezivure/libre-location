@@ -5,37 +5,21 @@ import Foundation
 
 /// Recognized motion activity types reported to Dart.
 enum DetectedActivity: String {
-    case stationary
+    case still
     case walking
     case running
-    case cycling
-    case automotive
+    case on_bicycle
+    case in_vehicle
     case unknown
-}
-
-/// Confidence level for activity detection.
-enum ActivityConfidence: Int {
-    case low = 0
-    case medium = 1
-    case high = 2
-
-    init(from cmConfidence: CMMotionActivityConfidence) {
-        switch cmConfidence {
-        case .low: self = .low
-        case .medium: self = .medium
-        case .high: self = .high
-        @unknown default: self = .low
-        }
-    }
 }
 
 // MARK: - MotionDetectorService
 
-/// Production motion detector using CMMotionActivityManager + CMPedometer + accelerometer.
+/// Production motion detector using CMMotionActivityManager + accelerometer.
 ///
 /// Features:
 /// - Real activity recognition (walking, running, automotive, cycling, stationary)
-/// - Confidence reporting per activity
+/// - Confidence reporting per activity (0-100 scale for Dart compatibility)
 /// - Accelerometer-based motion/stillness detection as fallback
 /// - Configurable motion trigger delay
 /// - Callbacks for motion state changes and activity changes
@@ -45,14 +29,14 @@ final class MotionDetectorService {
 
     /// Called when motion state changes (moving vs stationary).
     typealias MotionChangeHandler = (Bool) -> Void
-    /// Called when the detected activity type changes. Dict: { "activity": String, "confidence": Int }
+    /// Called when the detected activity type changes. Dict matches Dart ActivityEvent.fromMap():
+    /// { "activity": String, "confidence": Int (0-100) }
     typealias ActivityChangeHandler = ([String: Any]) -> Void
 
     // MARK: - Properties
 
     private let activityManager = CMMotionActivityManager()
     private let motionManager = CMMotionManager()
-    private let pedometer = CMPedometer()
 
     private var motionChangeCallback: MotionChangeHandler?
     private var activityChangeCallback: ActivityChangeHandler?
@@ -144,18 +128,20 @@ final class MotionDetectorService {
         if detected != currentActivity {
             currentActivity = detected
 
+            // Emit with keys matching Dart ActivityEvent.fromMap():
+            // "activity" (String) and "confidence" (Int, 0-100)
             activityChangeCallback?([
                 "activity": detected.rawValue,
-                "confidence": confidence.rawValue,
+                "confidence": confidence,
             ])
         }
 
         // Determine motion state from activity
         let activityMoving: Bool
         switch detected {
-        case .walking, .running, .cycling, .automotive:
+        case .walking, .running, .on_bicycle, .in_vehicle:
             activityMoving = true
-        case .stationary:
+        case .still:
             activityMoving = false
         case .unknown:
             return  // Don't change state on unknown
@@ -166,21 +152,29 @@ final class MotionDetectorService {
         }
     }
 
-    private func classifyActivity(_ activity: CMMotionActivity) -> (DetectedActivity, ActivityConfidence) {
-        let confidence = ActivityConfidence(from: activity.confidence)
+    /// Classifies CMMotionActivity and returns (type, confidence_0_to_100).
+    private func classifyActivity(_ activity: CMMotionActivity) -> (DetectedActivity, Int) {
+        // Convert CMMotionActivityConfidence to 0-100 scale
+        let confidence: Int
+        switch activity.confidence {
+        case .low: confidence = 33
+        case .medium: confidence = 66
+        case .high: confidence = 100
+        @unknown default: confidence = 0
+        }
 
         if activity.stationary {
-            return (.stationary, confidence)
+            return (.still, confidence)
         } else if activity.automotive {
-            return (.automotive, confidence)
+            return (.in_vehicle, confidence)
         } else if activity.running {
             return (.running, confidence)
         } else if activity.cycling {
-            return (.cycling, confidence)
+            return (.on_bicycle, confidence)
         } else if activity.walking {
             return (.walking, confidence)
         }
-        return (.unknown, .low)
+        return (.unknown, 0)
     }
 
     // MARK: - Accelerometer Fallback
@@ -216,7 +210,6 @@ final class MotionDetectorService {
             if self.accelMoveCount >= self.accelWindowSize && !self.isMoving {
                 self.handleMotionStateChange(moving: true)
             } else if self.accelStillCount >= self.accelWindowSize * 2 && self.isMoving {
-                // Require more samples to confirm stillness (hysteresis)
                 self.handleMotionStateChange(moving: false)
             }
         }
@@ -229,7 +222,6 @@ final class MotionDetectorService {
         motionTriggerTimer = nil
 
         if motionTriggerDelay > 0 && moving {
-            // Delay motion trigger to avoid false positives
             motionTriggerTimer = Timer.scheduledTimer(
                 withTimeInterval: motionTriggerDelay,
                 repeats: false

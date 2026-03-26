@@ -32,6 +32,7 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
     private var providerStreamHandler: StreamHandler?
     private var activityStreamHandler: StreamHandler?
     private var motionChangeStreamHandler: StreamHandler?
+    private var heartbeatStreamHandler: StreamHandler?
 
     // Logging
     static var enableLogging = false
@@ -69,26 +70,33 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.geofenceStreamHandler)
 
-        // Provider change stream
+        // Provider change stream — must match Dart EventChannel name
         instance.providerStreamHandler = StreamHandler()
         FlutterEventChannel(
-            name: "libre_location/provider",
+            name: "libre_location/providerChange",
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.providerStreamHandler)
 
-        // Activity change stream
+        // Activity change stream — must match Dart EventChannel name
         instance.activityStreamHandler = StreamHandler()
         FlutterEventChannel(
-            name: "libre_location/activity",
+            name: "libre_location/activityChange",
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.activityStreamHandler)
 
-        // Motion change stream
+        // Motion change stream — must match Dart EventChannel name
         instance.motionChangeStreamHandler = StreamHandler()
         FlutterEventChannel(
-            name: "libre_location/motion_change",
+            name: "libre_location/motionChange",
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.motionChangeStreamHandler)
+
+        // Heartbeat stream — must match Dart EventChannel name
+        instance.heartbeatStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/heartbeat",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.heartbeatStreamHandler)
 
         // Initialize services
         instance.locationService = LocationService(
@@ -100,6 +108,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             },
             onMotionChange: { info in
                 instance.motionChangeStreamHandler?.send(info)
+            },
+            onHeartbeat: { info in
+                instance.heartbeatStreamHandler?.send(info)
             }
         )
 
@@ -143,6 +154,14 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             let distanceFilter = args["distanceFilter"] as? Double ?? 10.0
             let mode = args["mode"] as? Int ?? 1
             let enableMotion = args["enableMotionDetection"] as? Bool ?? true
+            let stopTimeout = args["stopTimeout"] as? Int ?? 5
+            let stationaryRadius = args["stationaryRadius"] as? Double ?? 25.0
+            let heartbeatInterval = args["heartbeatInterval"] as? Int ?? 0
+            let pausesAuto = args["pausesLocationUpdatesAutomatically"] as? Bool ?? false
+            let activityType = args["activityType"] as? Int ?? 0
+            let stopOnTerminate = args["stopOnTerminate"] as? Bool ?? true
+            let preventSuspend = args["preventSuspend"] as? Bool ?? false
+            let useSignificantChangesOnly = args["useSignificantChangesOnly"] as? Bool ?? false
 
             locationService?.startTracking(
                 accuracy: accuracy,
@@ -151,6 +170,18 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 mode: mode,
                 enableMotionDetection: enableMotion
             )
+
+            // Apply additional config fields
+            locationService?.setConfig([
+                "stopTimeout": stopTimeout,
+                "stationaryRadius": stationaryRadius,
+                "heartbeatInterval": heartbeatInterval,
+                "pausesLocationUpdatesAutomatically": pausesAuto,
+                "activityType": activityType,
+                "stopOnTerminate": stopOnTerminate,
+                "preventSuspend": preventSuspend,
+                "useSignificantChangesOnly": useSignificantChangesOnly,
+            ])
 
             if enableMotion {
                 motionDetector?.start(
@@ -274,8 +305,6 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
 
     // MARK: - Application Delegate
 
-    /// Handle app termination — if stopOnTerminate is false, significant location
-    /// changes will relaunch the app and `restoreTrackingIfNeeded()` handles recovery.
     public func applicationWillTerminate(_ application: UIApplication) {
         Self.log("App terminating — tracking will be restored via significant location changes if configured")
     }
@@ -306,7 +335,9 @@ class StreamHandler: NSObject, FlutterStreamHandler {
 
     func send(_ data: Any) {
         if let sink = eventSink {
-            sink(data)
+            DispatchQueue.main.async {
+                sink(data)
+            }
         } else {
             // Buffer events until a listener attaches
             if pendingEvents.count < maxPending {
