@@ -1,190 +1,259 @@
 # libre_location
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Pub Version](https://img.shields.io/pub/v/libre_location)](https://pub.dev/packages/libre_location)
-[![CI](https://github.com/Rezivure/libre-location/actions/workflows/ci.yml/badge.svg)](https://github.com/Rezivure/libre-location/actions)
-[![Platform](https://img.shields.io/badge/platform-android%20%7C%20ios-green.svg)](https://flutter.dev)
+Production-grade background location tracking for Flutter — **zero Google Play Services dependency**.
 
-**Background location tracking for Flutter — without Google Play Services.**
-
-A production-grade Flutter plugin that uses pure **AOSP LocationManager** on Android and **CoreLocation** on iOS. Zero proprietary dependencies. Built for privacy-focused apps, [GrapheneOS](https://grapheneos.org/), [CalyxOS](https://calyxos.org/), and degoogled devices.
-
-## The Problem
-
-Every popular Flutter location plugin depends on Google Play Services:
-
-| Feature | libre_location | geolocator | background_geolocation | background_location |
-|---|:---:|:---:|:---:|:---:|
-| **No Play Services** | ✅ | ❌ | ❌ | ❌ |
-| Background tracking | ✅ | ⚠️ | ✅ | ✅ |
-| Motion detection | ✅ | ❌ | ✅ | ❌ |
-| Geofencing | ✅ | ❌ | ✅ | ❌ |
-| Open source | ✅ Apache 2.0 | ✅ MIT | ⚠️ Paid license | ✅ MIT |
-| Works on GrapheneOS | ✅ | ❌ | ❌ | ❌ |
-| Works on CalyxOS | ✅ | ❌ | ❌ | ❌ |
-| Pure platform APIs | ✅ | ❌ | ❌ | ❌ |
-
-If your users run degoogled phones, custom ROMs, or simply value privacy — their location features break with every other plugin. **libre_location fixes this.**
+Uses pure AOSP `LocationManager` on Android and `CoreLocation` on iOS. Built for privacy-focused apps running on GrapheneOS, CalyxOS, LineageOS, and any degoogled device.
 
 ## Features
 
-- 📍 **Background location tracking** with foreground service (Android) and background modes (iOS)
-- 🏃 **Motion detection** — accelerometer-based on Android, CMMotionActivityManager on iOS
-- 🎯 **Geofencing** — ProximityAlert (Android) / CLCircularRegion (iOS), no Play Services
-- 🔋 **Three tracking modes** — Active, Balanced, Passive with configurable battery impact
-- 🔒 **Zero proprietary dependencies** — no Google Play Services, no proprietary SDKs
-- 📱 **Works everywhere** — stock Android, GrapheneOS, CalyxOS, LineageOS, /e/OS, iOS
+- **Background tracking** that survives app termination
+- **Start on boot** — automatic restart after device reboot
+- **Heartbeat** — guaranteed periodic location updates even when stationary
+- **Activity recognition** — walking, running, cycling, driving, stationary
+- **Motion change detection** — moving ↔ stationary transitions with configurable thresholds
+- **Dynamic config changes** at runtime via `setConfig()`
+- **getCurrentPosition** with multi-sample averaging, timeout, and maximum age caching
+- **Battery saver mode** — reduced accuracy/frequency when stationary
+- **Foreground service** with configurable notification (Android)
+- **Background location indicator** (iOS)
+- **Permission handling** including background/always permission flow
+- **Geofencing** with enter, exit, and dwell events
+- **Zero Google Play Services** — works on any Android device
 
-## Quick Start
-
-### Installation
+## Installation
 
 ```yaml
 dependencies:
-  libre_location: ^0.1.0
+  libre_location:
+    git:
+      url: https://github.com/Rezivure/libre-location.git
 ```
 
-### Android Setup
+## Quick Start
 
-Add permissions to `android/app/src/main/AndroidManifest.xml`:
+```dart
+import 'package:libre_location/libre_location.dart';
+
+// 1. Request permissions
+final permission = await LibreLocation.requestPermission();
+if (permission != LocationPermission.always) {
+  // Handle — background tracking requires "always" permission
+  return;
+}
+
+// 2. Start tracking
+await LibreLocation.startTracking(LocationConfig(
+  accuracy: Accuracy.high,
+  distanceFilter: 10.0,
+  stopOnTerminate: false,
+  startOnBoot: true,
+  heartbeatInterval: 300, // seconds
+  notification: NotificationConfig(
+    title: 'Grid',
+    text: 'Sharing your location',
+  ),
+));
+
+// 3. Listen for updates
+LibreLocation.positionStream.listen((position) {
+  print('${position.latitude}, ${position.longitude}');
+});
+
+LibreLocation.activityChangeStream.listen((activity) {
+  print('${activity.activity}: ${activity.confidence}%');
+});
+
+LibreLocation.heartbeatStream.listen((heartbeat) {
+  print('Heartbeat: ${heartbeat.position.latitude}');
+});
+
+// 4. Stop tracking
+await LibreLocation.stopTracking();
+```
+
+## API Reference
+
+### `LibreLocation` (static methods)
+
+| Method | Description |
+|--------|-------------|
+| `startTracking(LocationConfig)` | Start background location tracking |
+| `stopTracking()` | Stop tracking and remove foreground service |
+| `setConfig(LocationConfig)` | Update config at runtime without restart |
+| `getCurrentPosition(...)` | Get current position with optional multi-sample averaging |
+| `checkPermission()` | Check current location permission status |
+| `requestPermission()` | Request location permission (handles background escalation) |
+| `addGeofence(Geofence)` | Add a geofence to monitor |
+| `removeGeofence(String id)` | Remove a geofence by ID |
+| `getGeofences()` | Get all registered geofences |
+| `isTracking` | Whether tracking is currently active |
+
+### Streams
+
+| Stream | Type | Description |
+|--------|------|-------------|
+| `positionStream` | `Stream<Position>` | Location updates |
+| `motionChangeStream` | `Stream<Position>` | Moving ↔ stationary transitions (with position) |
+| `activityChangeStream` | `Stream<ActivityEvent>` | Activity type changes |
+| `heartbeatStream` | `Stream<HeartbeatEvent>` | Periodic heartbeat locations |
+| `providerChangeStream` | `Stream<ProviderEvent>` | GPS/network provider state changes |
+| `geofenceStream` | `Stream<GeofenceEvent>` | Geofence enter/exit/dwell events |
+
+### `LocationConfig`
+
+```dart
+LocationConfig(
+  accuracy: Accuracy.high,          // high, balanced, low, passive, navigation
+  intervalMs: 60000,                // ms between updates
+  distanceFilter: 10.0,            // minimum meters between updates
+  mode: TrackingMode.balanced,     // active, balanced, passive
+  
+  // Lifecycle
+  stopOnTerminate: false,          // keep tracking after app is killed
+  startOnBoot: true,               // restart tracking after device reboot
+  enableHeadless: true,            // enable headless background execution
+  
+  // Motion detection
+  enableMotionDetection: true,
+  stopTimeout: 5,                  // minutes of stillness before "stationary"
+  stationaryRadius: 25.0,         // meters
+  motionTriggerDelay: 0,          // ms delay before declaring "moving"
+  
+  // Heartbeat
+  heartbeatInterval: 300,         // seconds (0 = disabled)
+  
+  // Activity recognition
+  activityRecognitionInterval: 10000,
+  minimumActivityRecognitionConfidence: 75,
+  
+  // iOS-specific
+  pausesLocationUpdatesAutomatically: false,
+  activityType: ActivityType.other,
+  preventSuspend: false,
+  
+  // Android notification
+  notification: NotificationConfig(
+    title: 'Location Tracking',
+    text: 'Tracking in background',
+    sticky: true,
+    priority: NotificationPriority.low,
+  ),
+  
+  // Permission rationale dialog
+  backgroundPermissionRationale: PermissionRationale(
+    title: 'Background Location',
+    message: 'We need background location access to...',
+  ),
+)
+```
+
+### `Position`
+
+```dart
+Position(
+  latitude: 37.7749,
+  longitude: -122.4194,
+  altitude: 10.0,
+  accuracy: 5.0,          // meters
+  speed: 1.5,             // m/s
+  heading: 90.0,          // degrees
+  timestamp: DateTime,
+  provider: 'gps',        // 'gps', 'network', 'core_location'
+  isMoving: true,
+  activity: ActivityEvent?,
+  battery: BatteryInfo?,
+)
+```
+
+## Platform Setup
+
+### Android
+
+Add to `AndroidManifest.xml` (most are included by the plugin automatically):
 
 ```xml
+<!-- Required -->
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+<!-- Optional: for start on boot -->
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 ```
 
-### iOS Setup
+### iOS
 
-Add to `ios/Runner/Info.plist`:
+Add to `Info.plist`:
 
 ```xml
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>We need your location to provide tracking features.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>We need background location access for continuous tracking.</string>
+<string>We need your location to share with your contacts.</string>
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>We need your location to show on the map.</string>
+<key>NSMotionUsageDescription</key>
+<string>We use motion data to detect your activity type.</string>
 <key>UIBackgroundModes</key>
 <array>
-    <string>location</string>
+  <string>location</string>
 </array>
 ```
 
-## Usage
+## Migration from flutter_background_geolocation
 
-### Check & Request Permissions
+| flutter_background_geolocation | libre_location |
+|------|------|
+| `bg.ready(Config(...))` | `LibreLocation.startTracking(LocationConfig(...))` |
+| `bg.start()` | (included in `startTracking`) |
+| `bg.stop()` | `LibreLocation.stopTracking()` |
+| `bg.setConfig(Config(...))` | `LibreLocation.setConfig(LocationConfig(...))` |
+| `bg.getCurrentPosition(...)` | `LibreLocation.getCurrentPosition(...)` |
+| `bg.onLocation((loc) => ...)` | `LibreLocation.positionStream.listen(...)` |
+| `bg.onMotionChange((loc) => ...)` | `LibreLocation.motionChangeStream.listen(...)` |
+| `bg.onActivityChange((ev) => ...)` | `LibreLocation.activityChangeStream.listen(...)` |
+| `bg.onHeartbeat((ev) => ...)` | `LibreLocation.heartbeatStream.listen(...)` |
+| `bg.onGeofence((ev) => ...)` | `LibreLocation.geofenceStream.listen(...)` |
+| `bg.onProviderChange((ev) => ...)` | `LibreLocation.providerChangeStream.listen(...)` |
+| `bg.addGeofence(Geofence(...))` | `LibreLocation.addGeofence(Geofence(...))` |
+| `bg.removeGeofence(id)` | `LibreLocation.removeGeofence(id)` |
+| `Config.desiredAccuracy` | `LocationConfig.accuracy` |
+| `Config.distanceFilter` | `LocationConfig.distanceFilter` |
+| `Config.stopOnTerminate` | `LocationConfig.stopOnTerminate` |
+| `Config.startOnBoot` | `LocationConfig.startOnBoot` |
+| `Config.heartbeatInterval` | `LocationConfig.heartbeatInterval` |
+| `location.coords.latitude` | `position.latitude` |
+| `location.isMoving` | `position.isMoving` |
+| `location.activity.type` | `position.activity?.activity` |
 
-```dart
-final permission = await LibreLocation.checkPermission();
-if (permission == LocationPermission.denied) {
-  await LibreLocation.requestPermission();
-}
+### Key differences:
+
+1. **No license key** — libre_location is free and open source
+2. **No Google Play Services** — works on GrapheneOS, CalyxOS, etc.
+3. **Activity recognition** uses accelerometer heuristics (CMMotionActivity on iOS) instead of Google's Activity Recognition API
+4. **Single entry point** — `startTracking()` replaces `ready()` + `start()`
+5. **Config object** uses `LocationConfig` instead of `Config`
+
+## Architecture
+
 ```
-
-### Get Current Position
-
-```dart
-final position = await LibreLocation.getCurrentPosition(
-  accuracy: Accuracy.high,
-);
-print('${position.latitude}, ${position.longitude}');
-print('Accuracy: ${position.accuracy}m, Provider: ${position.provider}');
+┌─────────────────────────────────────────┐
+│              Dart API                    │
+│  LibreLocation → MethodChannelLibre...  │
+│  EventChannels for streams              │
+└────────────────┬────────────────────────┘
+                 │ MethodChannel / EventChannel
+     ┌───────────┴───────────┐
+     ▼                       ▼
+┌─────────────────┐   ┌─────────────────┐
+│   iOS Native    │   │ Android Native  │
+│ CoreLocation    │   │ AOSP LocManager │
+│ CoreMotion      │   │ ForegroundSvc   │
+│ CLCircularRegion│   │ AlarmManager    │
+│ UserDefaults    │   │ SQLite Buffer   │
+└─────────────────┘   └─────────────────┘
 ```
-
-### Background Tracking
-
-```dart
-// Start tracking
-await LibreLocation.startTracking(const LocationConfig(
-  accuracy: Accuracy.high,
-  mode: TrackingMode.balanced,
-  intervalMs: 30000,
-  distanceFilter: 10.0,
-  enableMotionDetection: true,
-  notificationTitle: 'My App',
-  notificationBody: 'Tracking your location',
-));
-
-// Listen to updates
-LibreLocation.positionStream.listen((position) {
-  print('New position: ${position.latitude}, ${position.longitude}');
-  print('Provider: ${position.provider}'); // 'gps', 'network', or 'passive'
-});
-
-// Stop tracking
-await LibreLocation.stopTracking();
-```
-
-### Geofencing
-
-```dart
-// Add a geofence
-await LibreLocation.addGeofence(Geofence(
-  id: 'home',
-  latitude: 37.7749,
-  longitude: -122.4194,
-  radiusMeters: 100,
-  triggers: {GeofenceTransition.enter, GeofenceTransition.exit},
-));
-
-// Listen for events
-LibreLocation.geofenceStream.listen((event) {
-  print('${event.transition.name} geofence: ${event.geofence.id}');
-});
-
-// Remove a geofence
-await LibreLocation.removeGeofence('home');
-```
-
-## Tracking Modes
-
-| Mode | Interval | Accuracy | Battery Impact | Best For |
-|---|---|---|---|---|
-| **Active** | 30s–2min | GPS (best) | ~5–8%/day | Navigation, fitness |
-| **Balanced** | ~5 min | Network + GPS on motion | ~2–4%/day | General tracking |
-| **Passive** | On significant change | ~500m | ~1%/day | Presence, analytics |
-
-### Motion Detection
-
-When `enableMotionDetection: true`, the plugin automatically:
-- **Android:** Monitors accelerometer variance over a 30-second window. Pauses GPS when still, resumes on movement. Uses `TYPE_SIGNIFICANT_MOTION` sensor as a wake trigger.
-- **iOS:** Uses `CMMotionActivityManager` to detect stationary/walking/driving states and adjusts accuracy accordingly.
-
-## How It Works
-
-### Android
-- Uses `android.location.LocationManager` with `GPS_PROVIDER` and `NETWORK_PROVIDER`
-- Foreground Service with persistent notification (required for Android 8+ background)
-- `START_STICKY` service that survives process kills
-- Geofencing via `LocationManager.addProximityAlert()` — pure AOSP API
-
-### iOS
-- Uses `CLLocationManager` with `allowsBackgroundLocationUpdates = true`
-- `startUpdatingLocation()` for active tracking
-- `startMonitoringSignificantLocationChanges()` for passive mode
-- Geofencing via `CLCircularRegion` monitoring (up to 20 regions)
-
-### What This Does NOT Use
-- ❌ `com.google.android.gms.location.FusedLocationProviderClient`
-- ❌ `com.google.android.gms.location.GeofencingClient`
-- ❌ Any Google Play Services library
-- ❌ Any proprietary SDK
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-```
-Copyright 2024 Rezivure
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-```
-
-See [LICENSE](LICENSE) for the full text.
+Apache 2.0
