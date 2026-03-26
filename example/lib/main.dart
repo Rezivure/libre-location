@@ -151,9 +151,11 @@ class _LocationPageState extends State<LocationPage> {
   Future<void> _startTracking() async {
     await LibreLocation.start(
       preset: _selectedPreset,
-      notification: const NotificationConfig(
-        title: 'Libre Location Demo',
-        text: 'Tracking your location',
+      config: LocationConfig(
+        notification: const NotificationConfig(
+          title: 'Libre Location Demo',
+          text: 'Tracking your location',
+        ),
       ),
     );
 

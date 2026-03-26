@@ -334,8 +334,8 @@ class LibreLocation {
   // Utilities
   // ───────────────────────────────────────────
 
-  static Future<void> changePace(bool isMoving) {
-    return LibreLocationPlatform.instance.changePace(isMoving);
+  static Future<void> setMoving(bool isMoving) {
+    return LibreLocationPlatform.instance.setMoving(isMoving);
   }
 
   static Future<List<Map<String, dynamic>>> getLog() async {

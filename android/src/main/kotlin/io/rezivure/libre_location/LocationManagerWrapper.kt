@@ -269,9 +269,9 @@ class LocationManagerWrapper(
     }
 
     /**
-     * Manually override motion state. Used by changePace API.
+     * Manually override motion state. Used by setMoving API.
      */
-    fun changePace(moving: Boolean) {
+    fun setMoving(moving: Boolean) {
         if (!isTracking) return
         if (moving) {
             onMotionDetected()
@@ -280,7 +280,7 @@ class LocationManagerWrapper(
             isMoving = false
             if (wasMoving && config.mode == 1) {
                 locationManager.removeUpdates(primaryListener)
-                Log.d(TAG, "changePace: forced stationary — GPS paused")
+                Log.d(TAG, "setMoving: forced stationary — GPS paused")
             }
         }
     }
@@ -396,7 +396,7 @@ class LocationManagerWrapper(
                 if (timeSince < DUPLICATE_TIME_THRESHOLD) {
                     if (location.accuracy >= last.accuracy) return
                 }
-                if (config.useSignificantChangesOnly) {
+                if (config.significantChangesOnly) {
                     val distance = location.distanceTo(last)
                     if (distance < config.distanceFilter) return
                 }

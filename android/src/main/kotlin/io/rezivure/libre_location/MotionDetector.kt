@@ -18,9 +18,9 @@ import kotlin.math.sqrt
  *
  * Features:
  * - Configurable stillness threshold and window size
- * - Stop timeout: waits [stopTimeoutMs] of stillness before declaring "stopped"
- * - Motion trigger delay: waits [motionTriggerDelayMs] of motion before declaring "moving"
- * - Stop detection delay: waits [stopDetectionDelayMs] before engaging stop detection
+ * - Stillness timeout: waits [stillnessTimeoutMs] of stillness before declaring "stopped"
+ * - Motion confirm delay: waits [motionConfirmDelayMs] of motion before declaring "moving"
+ * - Stillness detection delay: waits [stillnessDelayMs] before engaging stop detection
  * - Activity type estimation from sensor data (still, walking, running, in_vehicle)
  * - Significant motion sensor as a low-power wake trigger
  */
@@ -50,11 +50,11 @@ class MotionDetector(private val context: Context) {
         private set
 
     // Configuration
-    var stopTimeoutMs: Long = 300_000L        // time of stillness before "stopped"
-    var motionTriggerDelayMs: Long = 0L       // time of motion before "moving"
-    var stopDetectionDelayMs: Long = 0L       // delay before engaging stop detection
+    var stillnessTimeoutMs: Long = 300_000L        // time of stillness before "stopped"
+    var motionConfirmDelayMs: Long = 0L       // time of motion before "moving"
+    var stillnessDelayMs: Long = 0L       // delay before engaging stop detection
     var stillnessThreshold: Double = 0.3      // accelerometer variance threshold
-    var disableStopDetection: Boolean = false
+    var skipStillnessDetection: Boolean = false
 
     // Sliding window for variance calculation
     private val magnitudeHistory = mutableListOf<Double>()
@@ -64,7 +64,7 @@ class MotionDetector(private val context: Context) {
     private var stillnessStartTime: Long = 0L
     private var motionStartTime: Long = 0L
     private var trackingStartTime: Long = 0L
-    private var stopDetectionEngaged: Boolean = false
+    private var stillnessDetectionEngaged: Boolean = false
 
     // Activity estimation
     private var lastActivityType: String = "unknown"
@@ -128,7 +128,7 @@ class MotionDetector(private val context: Context) {
     }
 
     // Periodic stop detection check
-    private val stopDetectionRunnable = object : Runnable {
+    private val stillnessCheckRunnable = object : Runnable {
         override fun run() {
             if (!isRunning) return
             checkStopDetection()
@@ -152,7 +152,7 @@ class MotionDetector(private val context: Context) {
         isRunning = true
         isMoving = true
         trackingStartTime = System.currentTimeMillis()
-        stopDetectionEngaged = stopDetectionDelayMs == 0L
+        stillnessDetectionEngaged = stillnessDelayMs == 0L
 
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         accelerometer?.let {
@@ -173,8 +173,8 @@ class MotionDetector(private val context: Context) {
             Log.d(TAG, "Step counter sensor registered")
         } ?: Log.d(TAG, "No step counter sensor available")
 
-        handler.postDelayed(stopDetectionRunnable, 5_000L)
-        Log.d(TAG, "Motion detector started (stopTimeout=${stopTimeoutMs}ms, threshold=$stillnessThreshold)")
+        handler.postDelayed(stillnessCheckRunnable, 5_000L)
+        Log.d(TAG, "Motion detector started (stillnessTimeoutMs=${stillnessTimeoutMs}ms, threshold=$stillnessThreshold)")
     }
 
     /**
@@ -196,7 +196,7 @@ class MotionDetector(private val context: Context) {
             try { sensorManager.cancelTriggerSensor(significantMotionListener, it) }
             catch (_: Exception) {}
         }
-        handler.removeCallbacks(stopDetectionRunnable)
+        handler.removeCallbacks(stillnessCheckRunnable)
         magnitudeHistory.clear()
         recentVariances.clear()
         motionCallback = null
@@ -208,15 +208,15 @@ class MotionDetector(private val context: Context) {
      * Updates configuration parameters at runtime.
      */
     fun updateConfig(config: TrackingConfig) {
-        stopTimeoutMs = config.stopTimeout
-        motionTriggerDelayMs = config.motionTriggerDelay
-        stopDetectionDelayMs = config.stopDetectionDelay
-        disableStopDetection = config.disableStopDetection
-        // Map stationaryRadius to stillness threshold heuristically
+        stillnessTimeoutMs = config.stillnessTimeoutMs
+        motionConfirmDelayMs = config.motionConfirmDelayMs
+        stillnessDelayMs = config.stillnessDelayMs
+        skipStillnessDetection = config.skipStillnessDetection
+        // Map stillnessRadiusMeters to stillness threshold heuristically
         stillnessThreshold = when {
-            config.stationaryRadius <= 10f -> 0.15
-            config.stationaryRadius <= 25f -> 0.3
-            config.stationaryRadius <= 50f -> 0.5
+            config.stillnessRadiusMeters <= 10f -> 0.15
+            config.stillnessRadiusMeters <= 25f -> 0.3
+            config.stillnessRadiusMeters <= 50f -> 0.5
             else -> 0.8
         }
     }
@@ -244,9 +244,9 @@ class MotionDetector(private val context: Context) {
         }
 
         // Engage stop detection after delay
-        if (!stopDetectionEngaged && stopDetectionDelayMs > 0) {
-            if (System.currentTimeMillis() - trackingStartTime >= stopDetectionDelayMs) {
-                stopDetectionEngaged = true
+        if (!stillnessDetectionEngaged && stillnessDelayMs > 0) {
+            if (System.currentTimeMillis() - trackingStartTime >= stillnessDelayMs) {
+                stillnessDetectionEngaged = true
             }
         }
 
@@ -264,8 +264,8 @@ class MotionDetector(private val context: Context) {
             stillnessStartTime = 0L
 
             // Check motion trigger delay
-            if (!isMoving && motionTriggerDelayMs > 0) {
-                if (System.currentTimeMillis() - motionStartTime >= motionTriggerDelayMs) {
+            if (!isMoving && motionConfirmDelayMs > 0) {
+                if (System.currentTimeMillis() - motionStartTime >= motionConfirmDelayMs) {
                     handleMotionDetected()
                 }
             } else if (!isMoving) {
@@ -278,11 +278,11 @@ class MotionDetector(private val context: Context) {
     }
 
     private fun checkStopDetection() {
-        if (disableStopDetection || !stopDetectionEngaged || !isMoving) return
+        if (skipStillnessDetection || !stillnessDetectionEngaged || !isMoving) return
 
         if (stillnessStartTime > 0) {
             val stillDuration = System.currentTimeMillis() - stillnessStartTime
-            if (stillDuration >= stopTimeoutMs) {
+            if (stillDuration >= stillnessTimeoutMs) {
                 handleStillnessDetected()
             }
         }

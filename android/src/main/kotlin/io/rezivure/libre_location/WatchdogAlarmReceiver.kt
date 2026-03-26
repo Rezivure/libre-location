@@ -72,7 +72,7 @@ class WatchdogAlarmReceiver : BroadcastReceiver() {
                 putExtra(LocationService.EXTRA_NOTIFICATION_PRIORITY, config.notificationPriority)
                 putExtra(LocationService.EXTRA_NOTIFICATION_STICKY, config.notificationSticky)
                 putExtra(LocationService.EXTRA_HEARTBEAT_INTERVAL, config.heartbeatInterval)
-                putExtra(LocationService.EXTRA_PREVENT_SUSPEND, config.preventSuspend)
+                putExtra(LocationService.EXTRA_KEEP_AWAKE, config.keepAwake)
             }
 
             try {

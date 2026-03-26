@@ -35,7 +35,7 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
                         putExtra(LocationService.EXTRA_NOTIFICATION_TITLE, config.notificationTitle)
                         putExtra(LocationService.EXTRA_NOTIFICATION_BODY, config.notificationBody)
                         putExtra(LocationService.EXTRA_HEARTBEAT_INTERVAL, config.heartbeatInterval)
-                        putExtra(LocationService.EXTRA_PREVENT_SUSPEND, config.preventSuspend)
+                        putExtra(LocationService.EXTRA_KEEP_AWAKE, config.keepAwake)
                     }
                     try {
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {

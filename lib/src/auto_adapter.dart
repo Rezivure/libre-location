@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'tracking_preset.dart';
 import 'libre_location_platform.dart';
 import 'models/location_config.dart';
+import 'models/native_config.dart';
 import 'models/activity_event.dart';
 import 'enums/accuracy.dart';
 import 'logger.dart';
@@ -12,38 +13,36 @@ import 'logger.dart';
 ///
 /// Listens to app lifecycle (foreground/background) and activity changes,
 /// then adjusts the native tracking config within the bounds of the
-/// current [TrackingPreset]. This is the core "the plugin adapts, not the app"
-/// mechanism.
+/// current [TrackingPreset].
 class AutoAdapter with WidgetsBindingObserver {
   TrackingPreset _preset;
-  LocationConfig _baseConfig;
+  final LocationConfig _userConfig;
+  NativeConfig _baseNativeConfig;
   bool _isInForeground = true;
   String _currentActivity = 'unknown';
   bool _isActive = false;
 
   StreamSubscription<ActivityEvent>? _activitySub;
 
-  AutoAdapter(this._preset, this._baseConfig);
+  AutoAdapter(this._preset, this._userConfig, this._baseNativeConfig);
 
   TrackingPreset get preset => _preset;
-  LocationConfig get baseConfig => _baseConfig;
+  LocationConfig get userConfig => _userConfig;
+  NativeConfig get baseNativeConfig => _baseNativeConfig;
 
   /// Start listening to lifecycle and activity changes.
   void start() {
     if (_isActive) return;
     _isActive = true;
 
-    // Register lifecycle observer
     final binding = WidgetsBinding.instance;
     binding.addObserver(this);
 
-    // Listen to activity changes from native
     _activitySub = LibreLocationPlatform.instance.activityChangeStream.listen(
       _onActivityChange,
-      onError: (_) {}, // Ignore errors — activity detection may not be available
+      onError: (_) {},
     );
 
-    // Apply initial config based on current state
     _applyAdaptedConfig();
   }
 
@@ -59,16 +58,7 @@ class AutoAdapter with WidgetsBindingObserver {
   /// Switch to a new preset at runtime without stopping tracking.
   Future<void> setPreset(TrackingPreset preset) async {
     _preset = preset;
-    _baseConfig = PresetConfig.baseConfig(
-      preset,
-      notification: _baseConfig.notification,
-      backgroundPermissionRationale: _baseConfig.backgroundPermissionRationale,
-      stopOnTerminate: _baseConfig.stopOnTerminate,
-      startOnBoot: _baseConfig.startOnBoot,
-      enableHeadless: _baseConfig.enableHeadless,
-      debug: _baseConfig.debug,
-      logLevel: _baseConfig.logLevel,
-    );
+    _baseNativeConfig = PresetConfig.buildNativeConfig(preset, _userConfig);
     await _applyAdaptedConfig();
   }
 
@@ -93,8 +83,8 @@ class AutoAdapter with WidgetsBindingObserver {
   }
 
   void _onActivityChange(ActivityEvent event) {
-    if (event.confidence < 70) return; // Ignore low confidence
-    if (event.activity == _currentActivity) return; // No change
+    if (event.confidence < 70) return;
+    if (event.activity == _currentActivity) return;
 
     _currentActivity = event.activity;
     LibreLocationLogger.debug('AutoAdapter: activity → $_currentActivity');
@@ -105,27 +95,20 @@ class AutoAdapter with WidgetsBindingObserver {
   Future<void> _applyAdaptedConfig() async {
     if (!_isActive) return;
 
-    // Start with lifecycle overrides
     final lifecycle = _isInForeground
         ? PresetConfig.foregroundOverrides(_preset)
         : PresetConfig.backgroundOverrides(_preset);
 
-    // Layer activity overrides on top
     final activity = PresetConfig.activityOverrides(_preset, _currentActivity);
 
-    // Merge: lifecycle sets the base, activity fine-tunes distance/accuracy
-    // In foreground, prefer tighter of lifecycle vs activity
-    // In background, prefer activity-based (since it knows motion state)
     final double distanceFilter;
     final Accuracy accuracy;
     final int heartbeatInterval;
 
     if (_isInForeground) {
-      // Foreground: use the tighter (smaller) distance filter
       distanceFilter = lifecycle.distanceFilter < activity.distanceFilter
           ? lifecycle.distanceFilter
           : activity.distanceFilter;
-      // Use the higher accuracy
       accuracy = lifecycle.accuracy.index < activity.accuracy.index
           ? lifecycle.accuracy
           : activity.accuracy;
@@ -133,7 +116,6 @@ class AutoAdapter with WidgetsBindingObserver {
           ? lifecycle.heartbeatInterval
           : activity.heartbeatInterval;
     } else {
-      // Background: activity-based is primary, lifecycle is the floor
       distanceFilter = activity.distanceFilter;
       accuracy = activity.accuracy;
       heartbeatInterval = activity.heartbeatInterval > lifecycle.heartbeatInterval
@@ -141,7 +123,7 @@ class AutoAdapter with WidgetsBindingObserver {
           : activity.heartbeatInterval;
     }
 
-    final adapted = _baseConfig.copyWith(
+    final adapted = _baseNativeConfig.copyWith(
       distanceFilter: distanceFilter,
       accuracy: accuracy,
       heartbeatInterval: heartbeatInterval,

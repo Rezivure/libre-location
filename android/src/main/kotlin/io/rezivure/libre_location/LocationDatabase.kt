@@ -11,7 +11,7 @@ import android.location.Location
  *
  * Buffers locations when the Flutter engine is unavailable (headless mode,
  * app terminated) and enforces configurable retention limits via
- * [maxDaysToPersist] and [maxRecordsToPersist].
+ * [retentionDays] and [retentionMaxRecords].
  */
 class LocationDatabase(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {

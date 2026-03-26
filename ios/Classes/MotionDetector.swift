@@ -47,8 +47,8 @@ final class MotionDetectorService {
     private var isMoving = false
 
     // Config
-    private var motionTriggerDelay: TimeInterval = 0
-    private var disableMotionActivityUpdates = false
+    private var motionConfirmDelayMs: TimeInterval = 0
+    private var skipActivityUpdates = false
 
     // Accelerometer
     private let accelerometerUpdateInterval: TimeInterval = 0.5
@@ -63,8 +63,8 @@ final class MotionDetectorService {
     // MARK: - Start / Stop
 
     func start(
-        motionTriggerDelay: TimeInterval = 0,
-        disableMotionActivityUpdates: Bool = false,
+        motionConfirmDelayMs: TimeInterval = 0,
+        skipActivityUpdates: Bool = false,
         onMotionChanged: @escaping MotionChangeHandler,
         onActivityChanged: ActivityChangeHandler? = nil
     ) {
@@ -72,8 +72,8 @@ final class MotionDetectorService {
         isRunning = true
         isMoving = false
         currentActivity = .unknown
-        self.motionTriggerDelay = motionTriggerDelay
-        self.disableMotionActivityUpdates = disableMotionActivityUpdates
+        self.motionConfirmDelayMs = motionConfirmDelayMs
+        self.skipActivityUpdates = skipActivityUpdates
         self.motionChangeCallback = onMotionChanged
         self.activityChangeCallback = onActivityChanged
 
@@ -95,11 +95,11 @@ final class MotionDetectorService {
     }
 
     /// Update configuration without full restart.
-    func configure(motionTriggerDelay: TimeInterval? = nil,
-                   disableMotionActivityUpdates: Bool? = nil) {
-        if let d = motionTriggerDelay { self.motionTriggerDelay = d }
-        if let v = disableMotionActivityUpdates {
-            self.disableMotionActivityUpdates = v
+    func configure(motionConfirmDelayMs: TimeInterval? = nil,
+                   skipActivityUpdates: Bool? = nil) {
+        if let d = motionConfirmDelayMs { self.motionConfirmDelayMs = d }
+        if let v = skipActivityUpdates {
+            self.skipActivityUpdates = v
             if v {
                 activityManager.stopActivityUpdates()
             } else if isRunning {
@@ -111,7 +111,7 @@ final class MotionDetectorService {
     // MARK: - CMMotionActivity
 
     private func startActivityUpdates() {
-        guard !disableMotionActivityUpdates,
+        guard !skipActivityUpdates,
               CMMotionActivityManager.isActivityAvailable()
         else { return }
 
@@ -221,9 +221,9 @@ final class MotionDetectorService {
         motionTriggerTimer?.invalidate()
         motionTriggerTimer = nil
 
-        if motionTriggerDelay > 0 && moving {
+        if motionConfirmDelayMs > 0 && moving {
             motionTriggerTimer = Timer.scheduledTimer(
-                withTimeInterval: motionTriggerDelay,
+                withTimeInterval: motionConfirmDelayMs,
                 repeats: false
             ) { [weak self] _ in
                 self?.commitMotionChange(moving: true)

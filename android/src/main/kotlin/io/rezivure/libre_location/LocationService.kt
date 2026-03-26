@@ -44,7 +44,7 @@ class LocationService : Service() {
         const val EXTRA_NOTIFICATION_PRIORITY = "notificationPriority"
         const val EXTRA_NOTIFICATION_STICKY = "notificationSticky"
         const val EXTRA_HEARTBEAT_INTERVAL = "heartbeatInterval"
-        const val EXTRA_PREVENT_SUSPEND = "preventSuspend"
+        const val EXTRA_KEEP_AWAKE = "keepAwake"
         const val EXTRA_FROM_BOOT = "fromBoot"
 
         private var instance: LocationService? = null
@@ -57,7 +57,7 @@ class LocationService : Service() {
     private var notificationPriority = NotificationCompat.PRIORITY_LOW
     private var notificationSticky = true
     private var heartbeatIntervalSec = 0L
-    private var preventSuspend = false
+    private var keepAwake = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -96,7 +96,7 @@ class LocationService : Service() {
         notificationPriority = intent?.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority) ?: notificationPriority
         notificationSticky = intent?.getBooleanExtra(EXTRA_NOTIFICATION_STICKY, true) ?: true
         heartbeatIntervalSec = intent?.getLongExtra(EXTRA_HEARTBEAT_INTERVAL, 0L) ?: 0L
-        preventSuspend = intent?.getBooleanExtra(EXTRA_PREVENT_SUSPEND, false) ?: false
+        keepAwake = intent?.getBooleanExtra(EXTRA_KEEP_AWAKE, false) ?: false
 
         val notification = buildNotification()
 
@@ -106,8 +106,8 @@ class LocationService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // Acquire wake lock if preventSuspend is enabled
-        if (preventSuspend) {
+        // Acquire wake lock if keepAwake is enabled
+        if (keepAwake) {
             acquireWakeLock()
         }
 
@@ -117,7 +117,7 @@ class LocationService : Service() {
         }
 
         Log.d(TAG, "LocationService started (sticky=$notificationSticky, " +
-                "heartbeat=${heartbeatIntervalSec}s, preventSuspend=$preventSuspend)")
+                "heartbeat=${heartbeatIntervalSec}s, keepAwake=$keepAwake)")
 
         return START_STICKY
     }

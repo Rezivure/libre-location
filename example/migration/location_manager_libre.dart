@@ -76,9 +76,11 @@ class LocationManager with ChangeNotifier {
     // Start with one line — everything else is automatic
     await LibreLocation.start(
       preset: _batterySaverEnabled ? TrackingPreset.low : TrackingPreset.balanced,
-      notification: const NotificationConfig(
-        title: 'Location Sharing',
-        text: 'Active',
+      config: const LocationConfig(
+        notification: NotificationConfig(
+          title: 'Location Sharing',
+          text: 'Active',
+        ),
       ),
     );
 

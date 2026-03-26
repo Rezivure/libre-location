@@ -9,9 +9,9 @@ import org.json.JSONObject
  *
  * All time values are stored in milliseconds internally.
  * Dart sends:
- *   - stopTimeout in minutes
- *   - stopDetectionDelay in seconds (treated as ms-ready from Dart, but we handle both)
- *   - motionTriggerDelay in ms
+ *   - stillnessTimeoutMs in minutes
+ *   - stillnessDelayMs in seconds (treated as ms-ready from Dart, but we handle both)
+ *   - motionConfirmDelayMs in ms
  *   - heartbeatInterval in seconds
  *   - intervalMs in ms
  */
@@ -35,28 +35,28 @@ data class TrackingConfig(
     val enableHeadless: Boolean = true,
 
     // Motion detection — all times in ms
-    val stopTimeout: Long = 300_000L,               // 5 min in ms
-    val stopDetectionDelay: Long = 0L,
-    val stationaryRadius: Float = 25f,              // meters
-    val motionTriggerDelay: Long = 0L,
-    val disableStopDetection: Boolean = false,
-    val disableMotionActivityUpdates: Boolean = false,
-    val useSignificantChangesOnly: Boolean = false,
+    val stillnessTimeoutMs: Long = 300_000L,               // 5 min in ms
+    val stillnessDelayMs: Long = 0L,
+    val stillnessRadiusMeters: Float = 25f,              // meters
+    val motionConfirmDelayMs: Long = 0L,
+    val skipStillnessDetection: Boolean = false,
+    val skipActivityUpdates: Boolean = false,
+    val significantChangesOnly: Boolean = false,
 
     // Heartbeat — in seconds
     val heartbeatInterval: Long = 0L,
 
     // Activity recognition
-    val activityRecognitionInterval: Long = 10_000L,
-    val minimumActivityRecognitionConfidence: Int = 75,
+    val activityCheckIntervalMs: Long = 10_000L,
+    val activityConfidenceThreshold: Int = 75,
 
     // Persistence
-    val maxDaysToPersist: Int = 7,
-    val maxRecordsToPersist: Int = 10_000,
+    val retentionDays: Int = 7,
+    val retentionMaxRecords: Int = 10_000,
     val persistLocations: Boolean = true,
 
     // Battery
-    val preventSuspend: Boolean = false,
+    val keepAwake: Boolean = false,
 
     // GPS filtering
     val locationFilterEnabled: Boolean = true,
@@ -80,20 +80,20 @@ data class TrackingConfig(
         "stopOnTerminate" to stopOnTerminate,
         "startOnBoot" to startOnBoot,
         "enableHeadless" to enableHeadless,
-        "stopTimeout" to stopTimeout,
-        "stopDetectionDelay" to stopDetectionDelay,
-        "stationaryRadius" to stationaryRadius.toDouble(),
-        "motionTriggerDelay" to motionTriggerDelay,
-        "disableStopDetection" to disableStopDetection,
-        "disableMotionActivityUpdates" to disableMotionActivityUpdates,
-        "useSignificantChangesOnly" to useSignificantChangesOnly,
+        "stillnessTimeoutMin" to stillnessTimeoutMs,
+        "stillnessDelayMs" to stillnessDelayMs,
+        "stillnessRadiusMeters" to stillnessRadiusMeters.toDouble(),
+        "motionConfirmDelayMs" to motionConfirmDelayMs,
+        "skipStillnessDetection" to skipStillnessDetection,
+        "skipActivityUpdates" to skipActivityUpdates,
+        "significantChangesOnly" to significantChangesOnly,
         "heartbeatInterval" to heartbeatInterval,
-        "activityRecognitionInterval" to activityRecognitionInterval,
-        "minimumActivityRecognitionConfidence" to minimumActivityRecognitionConfidence,
-        "maxDaysToPersist" to maxDaysToPersist,
-        "maxRecordsToPersist" to maxRecordsToPersist,
+        "activityCheckIntervalMs" to activityCheckIntervalMs,
+        "activityConfidenceThreshold" to activityConfidenceThreshold,
+        "retentionDays" to retentionDays,
+        "retentionMaxRecords" to retentionMaxRecords,
         "persistLocations" to persistLocations,
-        "preventSuspend" to preventSuspend,
+        "keepAwake" to keepAwake,
         "locationFilterEnabled" to locationFilterEnabled,
         "maxAccuracy" to maxAccuracy.toDouble(),
         "maxSpeed" to maxSpeed.toDouble(),
@@ -119,7 +119,7 @@ data class TrackingConfig(
         /**
          * Creates a [TrackingConfig] from Dart method channel arguments.
          * Handles unit conversions:
-         *   - stopTimeout: Dart sends minutes → convert to ms
+         *   - stillnessTimeoutMin: Dart sends minutes → convert to ms
          *   - heartbeatInterval: Dart sends seconds → keep as seconds (used as-is)
          *   - intervalMs: already in ms
          */
@@ -139,9 +139,9 @@ data class TrackingConfig(
                 ?: notificationMap?.get("sticky") as? Boolean
                 ?: true
 
-            // stopTimeout: Dart sends in minutes, convert to ms
-            val stopTimeoutMinutes = (args["stopTimeout"] as? Number)?.toLong() ?: 5L
-            val stopTimeoutMs = stopTimeoutMinutes * 60_000L
+            // stillnessTimeoutMin: Dart sends in minutes, convert to ms
+            val stillnessMinutes = (args["stillnessTimeoutMin"] as? Number)?.toLong() ?: 5L
+            val stillnessMs = stillnessMinutes * 60_000L
 
             return TrackingConfig(
                 accuracy = args["accuracy"] as? Int ?: 0,
@@ -156,20 +156,20 @@ data class TrackingConfig(
                 stopOnTerminate = args["stopOnTerminate"] as? Boolean ?: false,
                 startOnBoot = args["startOnBoot"] as? Boolean ?: true,
                 enableHeadless = args["enableHeadless"] as? Boolean ?: true,
-                stopTimeout = stopTimeoutMs,
-                stopDetectionDelay = (args["stopDetectionDelay"] as? Number)?.toLong() ?: 0L,
-                stationaryRadius = (args["stationaryRadius"] as? Number)?.toFloat() ?: 25f,
-                motionTriggerDelay = (args["motionTriggerDelay"] as? Number)?.toLong() ?: 0L,
-                disableStopDetection = args["disableStopDetection"] as? Boolean ?: false,
-                disableMotionActivityUpdates = args["disableMotionActivityUpdates"] as? Boolean ?: false,
-                useSignificantChangesOnly = args["useSignificantChangesOnly"] as? Boolean ?: false,
+                stillnessTimeoutMs = stillnessMs,
+                stillnessDelayMs = (args["stillnessDelayMs"] as? Number)?.toLong() ?: 0L,
+                stillnessRadiusMeters = (args["stillnessRadiusMeters"] as? Number)?.toFloat() ?: 25f,
+                motionConfirmDelayMs = (args["motionConfirmDelayMs"] as? Number)?.toLong() ?: 0L,
+                skipStillnessDetection = args["skipStillnessDetection"] as? Boolean ?: false,
+                skipActivityUpdates = args["skipActivityUpdates"] as? Boolean ?: false,
+                significantChangesOnly = args["significantChangesOnly"] as? Boolean ?: false,
                 heartbeatInterval = (args["heartbeatInterval"] as? Number)?.toLong() ?: 0L,
-                activityRecognitionInterval = (args["activityRecognitionInterval"] as? Number)?.toLong() ?: 10_000L,
-                minimumActivityRecognitionConfidence = args["minimumActivityRecognitionConfidence"] as? Int ?: 75,
-                maxDaysToPersist = args["maxDaysToPersist"] as? Int ?: 7,
-                maxRecordsToPersist = args["maxRecordsToPersist"] as? Int ?: 10_000,
+                activityCheckIntervalMs = (args["activityCheckIntervalMs"] as? Number)?.toLong() ?: 10_000L,
+                activityConfidenceThreshold = args["activityConfidenceThreshold"] as? Int ?: 75,
+                retentionDays = args["retentionDays"] as? Int ?: 7,
+                retentionMaxRecords = args["retentionMaxRecords"] as? Int ?: 10_000,
                 persistLocations = args["persistLocations"] as? Boolean ?: true,
-                preventSuspend = args["preventSuspend"] as? Boolean ?: false,
+                keepAwake = args["keepAwake"] as? Boolean ?: false,
                 locationFilterEnabled = args["locationFilterEnabled"] as? Boolean ?: true,
                 maxAccuracy = (args["maxAccuracy"] as? Number)?.toFloat() ?: 100f,
                 maxSpeed = (args["maxSpeed"] as? Number)?.toFloat() ?: 83.33f,
@@ -189,7 +189,7 @@ data class TrackingConfig(
                 for (key in obj.keys()) {
                     map[key] = obj.get(key)
                 }
-                // When restoring from persisted JSON, stopTimeout is already in ms
+                // When restoring from persisted JSON, stillnessTimeoutMs is already in ms
                 // so we need to handle that — use the raw value since toMap() stores ms
                 TrackingConfig(
                     accuracy = (map["accuracy"] as? Number)?.toInt() ?: 0,
@@ -204,20 +204,20 @@ data class TrackingConfig(
                     stopOnTerminate = map["stopOnTerminate"] as? Boolean ?: false,
                     startOnBoot = map["startOnBoot"] as? Boolean ?: true,
                     enableHeadless = map["enableHeadless"] as? Boolean ?: true,
-                    stopTimeout = (map["stopTimeout"] as? Number)?.toLong() ?: 300_000L,
-                    stopDetectionDelay = (map["stopDetectionDelay"] as? Number)?.toLong() ?: 0L,
-                    stationaryRadius = (map["stationaryRadius"] as? Number)?.toFloat() ?: 25f,
-                    motionTriggerDelay = (map["motionTriggerDelay"] as? Number)?.toLong() ?: 0L,
-                    disableStopDetection = map["disableStopDetection"] as? Boolean ?: false,
-                    disableMotionActivityUpdates = map["disableMotionActivityUpdates"] as? Boolean ?: false,
-                    useSignificantChangesOnly = map["useSignificantChangesOnly"] as? Boolean ?: false,
+                    stillnessTimeoutMs = (map["stillnessTimeoutMin"] as? Number)?.toLong() ?: 300_000L,
+                    stillnessDelayMs = (map["stillnessDelayMs"] as? Number)?.toLong() ?: 0L,
+                    stillnessRadiusMeters = (map["stillnessRadiusMeters"] as? Number)?.toFloat() ?: 25f,
+                    motionConfirmDelayMs = (map["motionConfirmDelayMs"] as? Number)?.toLong() ?: 0L,
+                    skipStillnessDetection = map["skipStillnessDetection"] as? Boolean ?: false,
+                    skipActivityUpdates = map["skipActivityUpdates"] as? Boolean ?: false,
+                    significantChangesOnly = map["significantChangesOnly"] as? Boolean ?: false,
                     heartbeatInterval = (map["heartbeatInterval"] as? Number)?.toLong() ?: 0L,
-                    activityRecognitionInterval = (map["activityRecognitionInterval"] as? Number)?.toLong() ?: 10_000L,
-                    minimumActivityRecognitionConfidence = (map["minimumActivityRecognitionConfidence"] as? Number)?.toInt() ?: 75,
-                    maxDaysToPersist = (map["maxDaysToPersist"] as? Number)?.toInt() ?: 7,
-                    maxRecordsToPersist = (map["maxRecordsToPersist"] as? Number)?.toInt() ?: 10_000,
+                    activityCheckIntervalMs = (map["activityCheckIntervalMs"] as? Number)?.toLong() ?: 10_000L,
+                    activityConfidenceThreshold = (map["activityConfidenceThreshold"] as? Number)?.toInt() ?: 75,
+                    retentionDays = (map["retentionDays"] as? Number)?.toInt() ?: 7,
+                    retentionMaxRecords = (map["retentionMaxRecords"] as? Number)?.toInt() ?: 10_000,
                     persistLocations = map["persistLocations"] as? Boolean ?: true,
-                    preventSuspend = map["preventSuspend"] as? Boolean ?: false,
+                    keepAwake = map["keepAwake"] as? Boolean ?: false,
                     locationFilterEnabled = map["locationFilterEnabled"] as? Boolean ?: true,
                     maxAccuracy = (map["maxAccuracy"] as? Number)?.toFloat() ?: 100f,
                     maxSpeed = (map["maxSpeed"] as? Number)?.toFloat() ?: 83.33f,

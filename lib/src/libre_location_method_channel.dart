@@ -26,7 +26,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<LocationPermission>? _permissionChangeStream;
 
   @override
-  Future<void> startTracking(LocationConfig config) async {
+  Future<void> startTracking(NativeConfig config) async {
     await _channel.invokeMethod('startTracking', config.toMap());
   }
 
@@ -57,7 +57,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   }
 
   @override
-  Future<void> setConfig(LocationConfig config) async {
+  Future<void> setConfig(NativeConfig config) async {
     await _channel.invokeMethod('setConfig', config.toMap());
   }
 
@@ -204,8 +204,8 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   }
 
   @override
-  Future<void> changePace(bool isMoving) async {
-    await _channel.invokeMethod('changePace', {'isMoving': isMoving});
+  Future<void> setMoving(bool isMoving) async {
+    await _channel.invokeMethod('setMoving', {'isMoving': isMoving});
   }
 
   @override

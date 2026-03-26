@@ -6,8 +6,12 @@ import '../enums/location_authorization.dart';
 import 'notification_config.dart';
 import 'permission_rationale.dart';
 
-/// Configuration for background location tracking.
-class LocationConfig {
+/// Internal configuration sent to the native layer via method channels.
+///
+/// This class contains ALL tuning parameters that the native Android/iOS code
+/// expects. Developers never interact with this directly — it's built
+/// internally by [PresetConfig] from a [TrackingPreset] + [LocationConfig].
+class NativeConfig {
   final Accuracy accuracy;
   final int intervalMs;
   final double distanceFilter;
@@ -23,7 +27,7 @@ class LocationConfig {
   final bool skipActivityUpdates;
   final int motionConfirmDelayMs;
   final bool significantChangesOnly;
-  final bool isMoving;
+  final bool initiallyMoving;
   final int activityCheckIntervalMs;
   final int activityConfidenceThreshold;
   final int heartbeatInterval;
@@ -37,13 +41,11 @@ class LocationConfig {
   final NotificationConfig? notification;
   final PermissionRationale? backgroundPermissionRationale;
   final LocationAuthorizationRequest locationAuthorizationRequest;
-
-  // GPS filtering / smoothing
   final bool locationFilterEnabled;
   final double maxAccuracy;
   final double maxSpeed;
 
-  const LocationConfig({
+  const NativeConfig({
     this.accuracy = Accuracy.high,
     this.intervalMs = 60000,
     this.distanceFilter = 10.0,
@@ -59,7 +61,7 @@ class LocationConfig {
     this.skipActivityUpdates = false,
     this.motionConfirmDelayMs = 0,
     this.significantChangesOnly = false,
-    this.isMoving = false,
+    this.initiallyMoving = false,
     this.activityCheckIntervalMs = 10000,
     this.activityConfidenceThreshold = 75,
     this.heartbeatInterval = 0,
@@ -95,7 +97,7 @@ class LocationConfig {
       'skipActivityUpdates': skipActivityUpdates,
       'motionConfirmDelayMs': motionConfirmDelayMs,
       'significantChangesOnly': significantChangesOnly,
-      'isMoving': isMoving,
+      'initiallyMoving': initiallyMoving,
       'activityCheckIntervalMs': activityCheckIntervalMs,
       'activityConfidenceThreshold': activityConfidenceThreshold,
       'heartbeatInterval': heartbeatInterval,
@@ -108,7 +110,6 @@ class LocationConfig {
       'logLevel': logLevel.index,
       if (notification != null) ...{
         'notification': notification!.toMap(),
-        // Flatten for Android native compatibility
         'notificationTitle': notification!.title,
         'notificationBody': notification!.text,
         'notificationSticky': notification!.sticky,
@@ -123,48 +124,7 @@ class LocationConfig {
     };
   }
 
-  factory LocationConfig.fromMap(Map<String, dynamic> map) {
-    return LocationConfig(
-      accuracy: Accuracy.values[map['accuracy'] as int? ?? 0],
-      intervalMs: map['intervalMs'] as int? ?? 60000,
-      distanceFilter: (map['distanceFilter'] as num?)?.toDouble() ?? 10.0,
-      mode: TrackingMode.values[map['mode'] as int? ?? 1],
-      enableMotionDetection: map['enableMotionDetection'] as bool? ?? true,
-      stopOnTerminate: map['stopOnTerminate'] as bool? ?? true,
-      startOnBoot: map['startOnBoot'] as bool? ?? false,
-      enableHeadless: map['enableHeadless'] as bool? ?? false,
-      stillnessTimeoutMin: map['stillnessTimeoutMin'] as int? ?? 5,
-      stillnessDelayMs: map['stillnessDelayMs'] as int? ?? 0,
-      stillnessRadiusMeters: (map['stillnessRadiusMeters'] as num?)?.toDouble() ?? 25.0,
-      skipStillnessDetection: map['skipStillnessDetection'] as bool? ?? false,
-      skipActivityUpdates: map['skipActivityUpdates'] as bool? ?? false,
-      motionConfirmDelayMs: map['motionConfirmDelayMs'] as int? ?? 0,
-      significantChangesOnly: map['significantChangesOnly'] as bool? ?? false,
-      isMoving: map['isMoving'] as bool? ?? false,
-      activityCheckIntervalMs: map['activityCheckIntervalMs'] as int? ?? 10000,
-      activityConfidenceThreshold: map['activityConfidenceThreshold'] as int? ?? 75,
-      heartbeatInterval: map['heartbeatInterval'] as int? ?? 0,
-      activityType: ActivityType.values[map['activityType'] as int? ?? 0],
-      pausesLocationUpdatesAutomatically: map['pausesLocationUpdatesAutomatically'] as bool? ?? false,
-      keepAwake: map['keepAwake'] as bool? ?? false,
-      retentionDays: map['retentionDays'] as int? ?? 1,
-      retentionMaxRecords: map['retentionMaxRecords'] as int? ?? -1,
-      debug: map['debug'] as bool? ?? false,
-      logLevel: LogLevel.values[map['logLevel'] as int? ?? 0],
-      notification: map['notification'] != null
-          ? NotificationConfig.fromMap(Map<String, dynamic>.from(map['notification'] as Map))
-          : null,
-      backgroundPermissionRationale: map['backgroundPermissionRationale'] != null
-          ? PermissionRationale.fromMap(Map<String, dynamic>.from(map['backgroundPermissionRationale'] as Map))
-          : null,
-      locationAuthorizationRequest: LocationAuthorizationRequest.values[map['locationAuthorizationRequest'] as int? ?? 0],
-      locationFilterEnabled: map['locationFilterEnabled'] as bool? ?? true,
-      maxAccuracy: (map['maxAccuracy'] as num?)?.toDouble() ?? 100.0,
-      maxSpeed: (map['maxSpeed'] as num?)?.toDouble() ?? 83.33,
-    );
-  }
-
-  LocationConfig copyWith({
+  NativeConfig copyWith({
     Accuracy? accuracy,
     int? intervalMs,
     double? distanceFilter,
@@ -180,7 +140,7 @@ class LocationConfig {
     bool? skipActivityUpdates,
     int? motionConfirmDelayMs,
     bool? significantChangesOnly,
-    bool? isMoving,
+    bool? initiallyMoving,
     int? activityCheckIntervalMs,
     int? activityConfidenceThreshold,
     int? heartbeatInterval,
@@ -198,7 +158,7 @@ class LocationConfig {
     double? maxAccuracy,
     double? maxSpeed,
   }) {
-    return LocationConfig(
+    return NativeConfig(
       accuracy: accuracy ?? this.accuracy,
       intervalMs: intervalMs ?? this.intervalMs,
       distanceFilter: distanceFilter ?? this.distanceFilter,
@@ -214,7 +174,7 @@ class LocationConfig {
       skipActivityUpdates: skipActivityUpdates ?? this.skipActivityUpdates,
       motionConfirmDelayMs: motionConfirmDelayMs ?? this.motionConfirmDelayMs,
       significantChangesOnly: significantChangesOnly ?? this.significantChangesOnly,
-      isMoving: isMoving ?? this.isMoving,
+      initiallyMoving: initiallyMoving ?? this.initiallyMoving,
       activityCheckIntervalMs: activityCheckIntervalMs ?? this.activityCheckIntervalMs,
       activityConfidenceThreshold: activityConfidenceThreshold ?? this.activityConfidenceThreshold,
       heartbeatInterval: heartbeatInterval ?? this.heartbeatInterval,
@@ -236,5 +196,5 @@ class LocationConfig {
 
   @override
   String toString() =>
-      'LocationConfig(accuracy: ${accuracy.name}, distanceFilter: $distanceFilter, mode: ${mode.name})';
+      'NativeConfig(accuracy: ${accuracy.name}, distanceFilter: $distanceFilter, mode: ${mode.name})';
 }

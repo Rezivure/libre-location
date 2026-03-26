@@ -10,14 +10,14 @@ struct LocationServiceConfig: Codable {
     var distanceFilter: Double = 10.0
     var mode: Int = 1
     var enableMotionDetection: Bool = true
-    var stopTimeout: Int = 5          // minutes before declaring stationary
-    var stationaryRadius: Double = 25.0
+    var stillnessTimeoutMin: Int = 5          // minutes before declaring stationary
+    var stillnessRadiusMeters: Double = 25.0
     var heartbeatInterval: Int = 0    // seconds; 0 = disabled
     var pausesLocationUpdatesAutomatically: Bool = false
     var activityType: Int = 0         // CLActivityType raw value
     var stopOnTerminate: Bool = false
-    var preventSuspend: Bool = false
-    var useSignificantChangesOnly: Bool = false
+    var keepAwake: Bool = false
+    var significantChangesOnly: Bool = false
     var showsBackgroundLocationIndicator: Bool = true
 
     // GPS filtering
@@ -110,7 +110,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // Heartbeat
     private var heartbeatTimer: Timer?
     private var lastEmittedLocation: CLLocation?
-    private var preventSuspendTimer: Timer?
+    private var keepAwakeTimer: Timer?
 
     // Stop detection
     private var lastMovementDate = Date()
@@ -193,7 +193,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         locationManager.stopUpdatingLocation()
         locationManager.stopMonitoringSignificantLocationChanges()
         stopHeartbeat()
-        stopPreventSuspend()
+        stopKeepAwake()
         stopStopDetectionTimer()
     }
 
@@ -204,16 +204,16 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if let v = args["distanceFilter"] as? Double { config.distanceFilter = v }
         if let v = args["mode"] as? Int { config.mode = v }
         if let v = args["enableMotionDetection"] as? Bool { config.enableMotionDetection = v }
-        if let v = args["stopTimeout"] as? Int { config.stopTimeout = v }
-        if let v = args["stationaryRadius"] as? Double { config.stationaryRadius = v }
+        if let v = args["stillnessTimeoutMin"] as? Int { config.stillnessTimeoutMin = v }
+        if let v = args["stillnessRadiusMeters"] as? Double { config.stillnessRadiusMeters = v }
         if let v = args["heartbeatInterval"] as? Int { config.heartbeatInterval = v }
         if let v = args["pausesLocationUpdatesAutomatically"] as? Bool {
             config.pausesLocationUpdatesAutomatically = v
         }
         if let v = args["activityType"] as? Int { config.activityType = v }
         if let v = args["stopOnTerminate"] as? Bool { config.stopOnTerminate = v }
-        if let v = args["preventSuspend"] as? Bool { config.preventSuspend = v }
-        if let v = args["useSignificantChangesOnly"] as? Bool { config.useSignificantChangesOnly = v }
+        if let v = args["keepAwake"] as? Bool { config.keepAwake = v }
+        if let v = args["significantChangesOnly"] as? Bool { config.significantChangesOnly = v }
         if let v = args["showsBackgroundLocationIndicator"] as? Bool {
             config.showsBackgroundLocationIndicator = v
         }
@@ -307,11 +307,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     func onStillnessDetected() {
         guard isTracking else { return }
-        // Don't immediately go stationary; let stopTimeout handle it
+        // Don't immediately go stationary; let stillnessTimeoutMin handle it
     }
 
-    /// Manually override motion state (changePace API).
-    func changePace(moving: Bool) {
+    /// Manually override motion state (setMoving API).
+    func setMoving(moving: Bool) {
         guard isTracking else { return }
         if moving {
             onMotionDetected()
@@ -323,7 +323,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             // Reduce power
             if config.mode != 0 {
                 locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-                locationManager.distanceFilter = max(config.stationaryRadius, 50.0)
+                locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
             }
         }
     }
@@ -524,7 +524,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         locationManager.stopMonitoringSignificantLocationChanges()
 
         // Start based on mode
-        if config.useSignificantChangesOnly || config.mode == 2 {
+        if config.significantChangesOnly || config.mode == 2 {
             locationManager.startMonitoringSignificantLocationChanges()
         } else {
             locationManager.startUpdatingLocation()
@@ -538,14 +538,14 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         configureHeartbeat()
 
         // Prevent suspend
-        if config.preventSuspend {
-            startPreventSuspend()
+        if config.keepAwake {
+            startKeepAwake()
         } else {
-            stopPreventSuspend()
+            stopKeepAwake()
         }
 
         // Stop detection
-        if config.stopTimeout > 0 {
+        if config.stillnessTimeoutMin > 0 {
             restartStopDetectionTimer()
         }
 
@@ -602,9 +602,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Prevent Suspend
 
-    private func startPreventSuspend() {
-        stopPreventSuspend()
-        preventSuspendTimer = Timer.scheduledTimer(
+    private func startKeepAwake() {
+        stopKeepAwake()
+        keepAwakeTimer = Timer.scheduledTimer(
             withTimeInterval: 60.0,
             repeats: true
         ) { [weak self] _ in
@@ -613,9 +613,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    private func stopPreventSuspend() {
-        preventSuspendTimer?.invalidate()
-        preventSuspendTimer = nil
+    private func stopKeepAwake() {
+        keepAwakeTimer?.invalidate()
+        keepAwakeTimer = nil
     }
 
     // MARK: - Motion Change Emission
@@ -656,10 +656,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     private func restartStopDetectionTimer() {
         stopStopDetectionTimer()
-        guard config.stopTimeout > 0 else { return }
+        guard config.stillnessTimeoutMin > 0 else { return }
 
-        // stopTimeout is in minutes (from Dart)
-        let timeout = TimeInterval(config.stopTimeout * 60)
+        // stillnessTimeoutMin is in minutes (from Dart)
+        let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
         stopDetectionTimer = Timer.scheduledTimer(
             withTimeInterval: timeout,
             repeats: false
@@ -677,7 +677,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         guard isTracking, isMoving else { return }
 
         let elapsed = Date().timeIntervalSince(lastMovementDate)
-        let timeout = TimeInterval(config.stopTimeout * 60)
+        let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
 
         if elapsed >= timeout {
             isMoving = false
@@ -688,7 +688,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             // Reduce power: switch to lower accuracy or significant changes
             if config.mode != 0 {
                 locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-                locationManager.distanceFilter = max(config.stationaryRadius, 50.0)
+                locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
             }
         }
     }

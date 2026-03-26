@@ -251,14 +251,14 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             let distanceFilter = args["distanceFilter"] as? Double ?? 10.0
             let mode = args["mode"] as? Int ?? 1
             let enableMotion = args["enableMotionDetection"] as? Bool ?? true
-            let stopTimeout = args["stopTimeout"] as? Int ?? 5
-            let stationaryRadius = args["stationaryRadius"] as? Double ?? 25.0
+            let stillnessTimeoutMin = args["stillnessTimeoutMin"] as? Int ?? 5
+            let stillnessRadiusMeters = args["stillnessRadiusMeters"] as? Double ?? 25.0
             let heartbeatInterval = args["heartbeatInterval"] as? Int ?? 0
             let pausesAuto = args["pausesLocationUpdatesAutomatically"] as? Bool ?? false
             let activityType = args["activityType"] as? Int ?? 0
             let stopOnTerminate = args["stopOnTerminate"] as? Bool ?? true
-            let preventSuspend = args["preventSuspend"] as? Bool ?? false
-            let useSignificantChangesOnly = args["useSignificantChangesOnly"] as? Bool ?? false
+            let keepAwake = args["keepAwake"] as? Bool ?? false
+            let significantChangesOnly = args["significantChangesOnly"] as? Bool ?? false
 
             locationService?.startTracking(
                 accuracy: accuracy,
@@ -270,14 +270,14 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
 
             // Apply additional config fields
             locationService?.setConfig([
-                "stopTimeout": stopTimeout,
-                "stationaryRadius": stationaryRadius,
+                "stillnessTimeoutMin": stillnessTimeoutMin,
+                "stillnessRadiusMeters": stillnessRadiusMeters,
                 "heartbeatInterval": heartbeatInterval,
                 "pausesLocationUpdatesAutomatically": pausesAuto,
                 "activityType": activityType,
                 "stopOnTerminate": stopOnTerminate,
-                "preventSuspend": preventSuspend,
-                "useSignificantChangesOnly": useSignificantChangesOnly,
+                "keepAwake": keepAwake,
+                "significantChangesOnly": significantChangesOnly,
             ])
 
             // Schedule BGTaskScheduler heartbeat for when app is suspended
@@ -325,11 +325,11 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             locationService?.setConfig(args)
 
             // Update motion detector if relevant config changed
-            if let delay = args["motionTriggerDelay"] as? Double {
-                motionDetector?.configure(motionTriggerDelay: delay)
+            if let delay = args["motionConfirmDelayMs"] as? Double {
+                motionDetector?.configure(motionConfirmDelayMs: delay)
             }
-            if let disable = args["disableMotionActivityUpdates"] as? Bool {
-                motionDetector?.configure(disableMotionActivityUpdates: disable)
+            if let disable = args["skipActivityUpdates"] as? Bool {
+                motionDetector?.configure(skipActivityUpdates: disable)
             }
 
             result(nil)
@@ -443,9 +443,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 result(0) // fullAccuracy on pre-14
             }
 
-        case "changePace":
+        case "setMoving":
             let moving = args?["isMoving"] as? Bool ?? true
-            locationService?.changePace(moving: moving)
+            locationService?.setMoving(moving: moving)
             result(nil)
 
         case "getLog":

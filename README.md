@@ -43,7 +43,7 @@ LibreLocation.onLocation.listen((position) {
 await LibreLocation.stop();
 ```
 
-No config objects. No magic numbers. The plugin auto-adapts to foreground/background, detected activity, and stationary state.
+No magic numbers. No GPS tuning. The plugin auto-adapts to foreground/background, detected activity, and stationary state.
 
 ## Tracking Presets
 
@@ -217,57 +217,45 @@ await LibreLocation.removeGeofence('home');
 final geofences = await LibreLocation.getGeofences();
 ```
 
-## Advanced: Custom Config (Power Users)
+## Configuration
 
-If presets don't fit your use case, pass a full `LocationConfig` for manual control. **This disables auto-adaptation** — you own the config entirely.
+`LocationConfig` is intentionally minimal. All GPS tuning (distance filters, accuracy levels, activity recognition, etc.) is handled internally by presets. You only configure what's genuinely app-specific:
 
 ```dart
-await LibreLocation.start(config: LocationConfig(
-  accuracy: Accuracy.high,
-  intervalMs: 30000,
-  distanceFilter: 15.0,
-  mode: TrackingMode.active,
-  enableMotionDetection: true,
-  stopOnTerminate: false,
-  startOnBoot: true,
-  enableHeadless: true,
-  stopTimeout: 5,
-  stopDetectionDelay: 2,
-  stationaryRadius: 25.0,
-  heartbeatInterval: 900,
-  activityRecognitionInterval: 10000,
-  minimumActivityRecognitionConfidence: 75,
-  pausesLocationUpdatesAutomatically: false,
-  preventSuspend: false,
-  maxDaysToPersist: 1,
-  maxRecordsToPersist: 200,
-  debug: true,
-  logLevel: LogLevel.debug,
-  notification: NotificationConfig(
-    title: 'Tracking Active',
-    text: 'Running in background',
+await LibreLocation.start(
+  preset: TrackingPreset.balanced,
+  config: LocationConfig(
+    notification: NotificationConfig(
+      title: 'Tracking Active',
+      text: 'Running in background',
+    ),
+    stopOnTerminate: false,
+    startOnBoot: true,
+    enableHeadless: true,
+    debug: true,
   ),
-));
+);
 ```
 
-You can also update config at runtime without restarting:
-
-```dart
-await LibreLocation.setConfig(LocationConfig(...));
-```
-
-### `start()` parameters (preset mode)
+### `start()` parameters
 
 | Parameter | Default | Description |
 |---|---|---|
 | `preset` | `TrackingPreset.balanced` | Tracking tier |
+| `config` | `LocationConfig()` | App-specific settings (see below) |
+
+### `LocationConfig` fields
+
+| Field | Default | Description |
+|---|---|---|
 | `notification` | `null` | Android foreground service notification |
 | `backgroundPermissionRationale` | `null` | Permission dialog text |
 | `stopOnTerminate` | `false` | Stop tracking when app is killed |
 | `startOnBoot` | `true` | Resume tracking after device reboot |
 | `enableHeadless` | `true` | Dart callbacks after app termination (Android) |
 | `debug` | `false` | Enable debug logging |
-| `logLevel` | `LogLevel.off` | Log verbosity |
+
+That's it. No `distanceFilter`, no `stationaryRadius`, no `activityRecognitionInterval`. The preset handles all of that.
 
 ## Platform Setup
 
@@ -388,7 +376,7 @@ await LibreLocation.requestTemporaryFullAccuracy(purposeKey: 'navigation');
 
 ```dart
 // Force motion state
-await LibreLocation.changePace(true); // Force "moving" state
+await LibreLocation.setMoving(true); // Force "moving" state
 
 // Check tracking state
 final tracking = await LibreLocation.isTracking;
@@ -445,9 +433,11 @@ import 'package:libre_location/libre_location.dart';
 // Start with one line — auto-adapts to everything
 await LibreLocation.start(
   preset: TrackingPreset.balanced,
-  notification: const NotificationConfig(
-    title: 'Location Sharing',
-    text: 'Active',
+  config: const LocationConfig(
+    notification: NotificationConfig(
+      title: 'Location Sharing',
+      text: 'Active',
+    ),
   ),
 );
 
@@ -491,9 +481,11 @@ Enable headless mode and configure persistence:
 await LibreLocation.registerHeadlessDispatcher(dispatcher, callback);
 await LibreLocation.start(
   preset: TrackingPreset.balanced,
-  stopOnTerminate: false,
-  startOnBoot: true,
-  enableHeadless: true,
+  config: const LocationConfig(
+    stopOnTerminate: false,
+    startOnBoot: true,
+    enableHeadless: true,
+  ),
 );
 ```
 

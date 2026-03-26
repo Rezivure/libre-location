@@ -17,7 +17,7 @@ abstract class LibreLocationPlatform extends PlatformInterface {
     _instance = instance;
   }
 
-  Future<void> startTracking(LocationConfig config) {
+  Future<void> startTracking(NativeConfig config) {
     throw UnimplementedError('startTracking() has not been implemented.');
   }
 
@@ -35,7 +35,7 @@ abstract class LibreLocationPlatform extends PlatformInterface {
     throw UnimplementedError('getCurrentPosition() has not been implemented.');
   }
 
-  Future<void> setConfig(LocationConfig config) {
+  Future<void> setConfig(NativeConfig config) {
     throw UnimplementedError('setConfig() has not been implemented.');
   }
 
@@ -169,8 +169,8 @@ abstract class LibreLocationPlatform extends PlatformInterface {
   /// Manually overrides the motion state.
   /// When [isMoving] is `true`, tracking switches to active/moving mode.
   /// When `false`, tracking switches to stationary mode.
-  Future<void> changePace(bool isMoving) {
-    throw UnimplementedError('changePace() has not been implemented.');
+  Future<void> setMoving(bool isMoving) {
+    throw UnimplementedError('setMoving() has not been implemented.');
   }
 
   /// Returns recent log entries from the in-memory log buffer.

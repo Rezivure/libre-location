@@ -327,11 +327,11 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 result.success(opened)
             }
 
-            // changePace — manual motion state override
-            "changePace" -> {
+            // setMoving — manual motion state override
+            "setMoving" -> {
                 val args = call.arguments as? Map<*, *>
                 val isMoving = args?.get("isMoving") as? Boolean ?: true
-                locationManagerWrapper?.changePace(isMoving)
+                locationManagerWrapper?.setMoving(isMoving)
                 if (isMoving) {
                     motionDetector?.let {
                         // Force the detector's state
@@ -427,7 +427,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             putExtra(LocationService.EXTRA_NOTIFICATION_PRIORITY, config.notificationPriority)
             putExtra(LocationService.EXTRA_NOTIFICATION_STICKY, config.notificationSticky)
             putExtra(LocationService.EXTRA_HEARTBEAT_INTERVAL, config.heartbeatInterval)
-            putExtra(LocationService.EXTRA_PREVENT_SUSPEND, config.preventSuspend)
+            putExtra(LocationService.EXTRA_KEEP_AWAKE, config.keepAwake)
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -445,7 +445,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         locationManagerWrapper?.startTracking(config)
 
         // Start motion detection if enabled
-        if (config.enableMotionDetection && !config.disableMotionActivityUpdates) {
+        if (config.enableMotionDetection && !config.skipActivityUpdates) {
             motionDetector?.updateConfig(config)
             motionDetector?.start(
                 onMotionChanged = { isMoving ->
@@ -472,7 +472,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                     }
                 },
                 onActivityChanged = { type, confidence ->
-                    if (confidence >= config.minimumActivityRecognitionConfidence) {
+                    if (confidence >= config.activityConfidenceThreshold) {
                         mainHandler.post {
                             // Key must be "activity" not "type" — matches Dart ActivityEvent.fromMap()
                             activityStreamHandler?.send(mapOf(
@@ -511,7 +511,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         locationDatabase?.let { db ->
             val config = TrackingConfig.restore(context)
             if (config != null) {
-                db.enforceRetention(config.maxDaysToPersist, config.maxRecordsToPersist)
+                db.enforceRetention(config.retentionDays, config.retentionMaxRecords)
             }
         }
 
