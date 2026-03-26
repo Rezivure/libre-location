@@ -580,6 +580,58 @@ For comprehensive guidance, see [dontkillmyapp.com](https://dontkillmyapp.com).
 - **GeofenceManagerService**: CLCircularRegion-based geofencing with dwell support
 - **BGTaskScheduler**: Background heartbeat via BGAppRefreshTask (iOS 13+)
 
+## Supported Platforms
+
+| Platform | Minimum Version | Notes |
+|----------|----------------|-------|
+| **Android** | API 21 (5.0 Lollipop) | Pure AOSP LocationManager, no Play Services |
+| **iOS** | 13.0 | CoreLocation + CoreMotion, BGTaskScheduler for heartbeat |
+
+## Known Limitations
+
+- **Android first fix**: Without Google Play Services, the initial GPS fix can take 30-60 seconds outdoors. Subsequent fixes are fast.
+- **Android network provider accuracy**: Network-only positioning uses cell/Wi-Fi and is ~20-100m. No Google location fusion.
+- **iOS background limits**: iOS may throttle location updates in the background. Use `preventSuspend` and `heartbeatInterval` for critical apps.
+- **iOS geofence limit**: iOS enforces a hard limit of 20 monitored regions. LRU eviction is applied automatically.
+- **Activity recognition**: Without Google Play Services Activity Recognition API, activity detection uses accelerometer + step counter + GPS speed heuristics. Confidence may be lower than Play Services-based solutions.
+- **No web support**: This plugin targets native mobile platforms only.
+- **Heading/course**: On Android, heading is only available when the device is moving (derived from GPS bearing).
+
+## Contributing
+
+Contributions are welcome! Please follow these guidelines:
+
+1. **Fork** the repository and create a feature branch
+2. **Write tests** for new functionality
+3. **Follow existing code style** — Kotlin for Android, Swift for iOS, Dart for the API
+4. **Test on real devices** — location plugins behave differently on emulators
+5. **Open a PR** with a clear description of changes
+
+### Development Setup
+
+```bash
+git clone https://github.com/Rezivure/libre-location.git
+cd libre-location
+
+# Run Dart tests
+flutter test
+
+# Run Android tests
+cd android && ./gradlew test
+
+# Run example app
+cd example && flutter run
+```
+
+### Reporting Issues
+
+When filing issues, please include:
+- Device model and OS version
+- Flutter version (`flutter --version`)
+- Plugin version
+- Steps to reproduce
+- Relevant logs (`adb logcat | grep LibreLocation` for Android)
+
 ## License
 
 Apache License 2.0 — free for commercial use, no restrictions.
