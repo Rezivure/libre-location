@@ -34,6 +34,7 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
     private var activityStreamHandler: StreamHandler?
     private var motionChangeStreamHandler: StreamHandler?
     private var heartbeatStreamHandler: StreamHandler?
+    private var powerSaveStreamHandler: StreamHandler?
 
     // BGTaskScheduler
     static let bgTaskIdentifier = "io.rezivure.libre_location.heartbeat"
@@ -102,6 +103,21 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             name: "libre_location/heartbeat",
             binaryMessenger: registrar.messenger()
         ).setStreamHandler(instance.heartbeatStreamHandler)
+
+        // Power save change stream
+        instance.powerSaveStreamHandler = StreamHandler()
+        FlutterEventChannel(
+            name: "libre_location/powerSaveChange",
+            binaryMessenger: registrar.messenger()
+        ).setStreamHandler(instance.powerSaveStreamHandler)
+
+        // Observe low power mode changes
+        NotificationCenter.default.addObserver(
+            instance,
+            selector: #selector(instance.powerStateDidChange),
+            name: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil
+        )
 
         // Initialize services
         instance.locationService = LocationService(
@@ -365,6 +381,33 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
 
         // ── State Queries ────────────────────────────────────────
 
+        case "requestTemporaryFullAccuracy":
+            if #available(iOS 14.0, *) {
+                guard let purposeKey = args?["purposeKey"] as? String else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "purposeKey required", details: nil))
+                    return
+                }
+                locationService?.requestTemporaryFullAccuracy(purposeKey: purposeKey) { accuracyAuth in
+                    result(accuracyAuth)
+                }
+            } else {
+                result(0) // fullAccuracy on pre-14
+            }
+
+        case "changePace":
+            let moving = args?["isMoving"] as? Bool ?? true
+            locationService?.changePace(moving: moving)
+            result(nil)
+
+        case "getLog":
+            result(LibreLocationNativeLogger.getLog())
+
+        case "checkNotificationPermission":
+            result(true) // iOS doesn't need notification permission for location
+
+        case "requestNotificationPermission":
+            result(true) // no-op on iOS
+
         case "isMoving":
             result(locationService?.isMoving ?? false)
 
@@ -376,7 +419,28 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    // MARK: - Power Save Observer
+
+    @objc private func powerStateDidChange() {
+        let isLowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        Self.log("Low power mode changed: \(isLowPower)")
+        powerSaveStreamHandler?.send(isLowPower)
+    }
+
     // MARK: - Application Delegate
+
+    public func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [AnyHashable: Any]?
+    ) -> Bool {
+        // Check if relaunched due to a significant location change event
+        if let options = launchOptions as? [UIApplication.LaunchOptionsKey: Any],
+           options[.location] != nil {
+            Self.log("App relaunched from termination due to location event — restoring tracking")
+            locationService?.restoreTrackingIfNeeded()
+        }
+        return true
+    }
 
     public func applicationWillTerminate(_ application: UIApplication) {
         Self.log("App terminating — tracking will be restored via significant location changes if configured")

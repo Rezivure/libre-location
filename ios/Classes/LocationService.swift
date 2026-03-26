@@ -20,6 +20,11 @@ struct LocationServiceConfig: Codable {
     var useSignificantChangesOnly: Bool = false
     var showsBackgroundLocationIndicator: Bool = true
 
+    // GPS filtering
+    var locationFilterEnabled: Bool = true
+    var maxAccuracy: Double = 100.0   // meters
+    var maxSpeed: Double = 83.33      // m/s (~300 km/h)
+
     static let userDefaultsKey = "libre_location_config"
 
     func save() {
@@ -192,6 +197,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if let v = args["showsBackgroundLocationIndicator"] as? Bool {
             config.showsBackgroundLocationIndicator = v
         }
+        if let v = args["locationFilterEnabled"] as? Bool { config.locationFilterEnabled = v }
+        if let v = args["maxAccuracy"] as? Double { config.maxAccuracy = v }
+        if let v = args["maxSpeed"] as? Double { config.maxSpeed = v }
 
         config.save()
 
@@ -282,6 +290,24 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         // Don't immediately go stationary; let stopTimeout handle it
     }
 
+    /// Manually override motion state (changePace API).
+    func changePace(moving: Bool) {
+        guard isTracking else { return }
+        if moving {
+            onMotionDetected()
+        } else {
+            guard isMoving else { return }
+            isMoving = false
+            emitMotionChange(isMoving: false)
+
+            // Reduce power
+            if config.mode != 0 {
+                locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+                locationManager.distanceFilter = max(config.stationaryRadius, 50.0)
+            }
+        }
+    }
+
     // MARK: - Permissions
 
     func checkPermission() -> Int {
@@ -303,6 +329,20 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    // MARK: - Temporary Full Accuracy (iOS 14+)
+
+    @available(iOS 14.0, *)
+    func requestTemporaryFullAccuracy(purposeKey: String, callback: @escaping (Int) -> Void) {
+        locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purposeKey) { [weak self] error in
+            if let error = error {
+                LibreLocationPlugin.log("requestTemporaryFullAccuracy error: \(error.localizedDescription)")
+            }
+            let auth = self?.locationManager.accuracyAuthorization ?? .reducedAccuracy
+            // 0 = fullAccuracy, 1 = reducedAccuracy
+            callback(auth == .fullAccuracy ? 0 : 1)
+        }
+    }
+
     // MARK: - CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -312,6 +352,38 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         let age = abs(location.timestamp.timeIntervalSinceNow)
         if age > 30 && oneShotCallbacks.isEmpty {
             return  // stale
+        }
+
+        // GPS filtering (skip for one-shot requests)
+        if config.locationFilterEnabled && oneShotCallbacks.isEmpty {
+            // Reject negative horizontalAccuracy (invalid from CLLocationManager)
+            if location.horizontalAccuracy < 0 {
+                return
+            }
+
+            // Reject locations with accuracy worse than threshold
+            if location.horizontalAccuracy > config.maxAccuracy {
+                return
+            }
+
+            // Speed/distance checks against last emitted location
+            if let last = lastEmittedLocation {
+                let timeDelta = location.timestamp.timeIntervalSince(last.timestamp)
+                if timeDelta > 0 {
+                    let distance = location.distance(from: last)
+                    let impliedSpeed = distance / timeDelta
+
+                    // Reject impossible speed
+                    if impliedSpeed > config.maxSpeed {
+                        return
+                    }
+
+                    // Distance filter: don't emit if distance < distanceFilter
+                    if distance < config.distanceFilter {
+                        return
+                    }
+                }
+            }
         }
 
         let data = locationToMap(location)
