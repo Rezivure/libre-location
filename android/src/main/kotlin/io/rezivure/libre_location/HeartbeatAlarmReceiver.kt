@@ -60,5 +60,29 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to poke service: ${e.message}")
         }
+
+        // Dispatch to headless Dart engine if registered (for when Flutter UI is gone)
+        if (HeadlessCallbackDispatcher.hasCallback(context)) {
+            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            try {
+                val lastKnown = locationManager?.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                    ?: locationManager?.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                if (lastKnown != null) {
+                    val posMap = mapOf(
+                        "latitude" to lastKnown.latitude,
+                        "longitude" to lastKnown.longitude,
+                        "altitude" to lastKnown.altitude,
+                        "accuracy" to lastKnown.accuracy.toDouble(),
+                        "speed" to lastKnown.speed.toDouble(),
+                        "heading" to lastKnown.bearing.toDouble(),
+                        "timestamp" to lastKnown.time,
+                        "provider" to (lastKnown.provider ?: "unknown"),
+                    )
+                    HeadlessCallbackDispatcher.dispatchHeartbeat(context, mapOf("position" to posMap))
+                }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "No permission for headless location: ${e.message}")
+            }
+        }
     }
 }

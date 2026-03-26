@@ -131,6 +131,15 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             }
         }
 
+        // Feed location updates to geofence manager and motion detector
+        locationManagerWrapper?.addLocationUpdateListener { location ->
+            geofenceManager?.onLocationUpdate(location)
+            // Feed GPS speed to motion detector for improved activity recognition
+            if (location.hasSpeed()) {
+                motionDetector?.lastGpsSpeedMs = location.speed.toDouble()
+            }
+        }
+
         // Deliver any buffered locations from headless/boot mode
         deliverBufferedLocations()
 
@@ -194,6 +203,58 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
 
             // Notification
             "updateNotification" -> handleUpdateNotification(call, result)
+
+            // Headless callback registration
+            "registerHeadlessDispatcher" -> {
+                val args = call.arguments as Map<*, *>
+                val dispatcherHandle = (args["dispatcherHandle"] as Number).toLong()
+                val userCallbackHandle = (args["userCallbackHandle"] as Number).toLong()
+                HeadlessCallbackDispatcher.setCallbackHandles(context, dispatcherHandle, userCallbackHandle)
+                result.success(null)
+            }
+
+            // Battery optimization (OEM battery kill protection)
+            "checkBatteryOptimization" -> {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                val isIgnoring = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    pm.isIgnoringBatteryOptimizations(context.packageName)
+                } else {
+                    true // Pre-M doesn't have battery optimization restrictions
+                }
+                result.success(!isIgnoring) // true = is optimized (bad), false = exempt (good)
+            }
+
+            "requestBatteryOptimizationExemption" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    try {
+                        val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = android.net.Uri.parse("package:${context.packageName}")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to open battery optimization settings: ${e.message}")
+                        result.success(false)
+                    }
+                } else {
+                    result.success(true) // Not needed pre-M
+                }
+            }
+
+            "isAutoStartEnabled" -> {
+                // Best-effort detection of manufacturer auto-start settings
+                result.success(checkAutoStartAvailability())
+            }
+
+            "getManufacturer" -> {
+                result.success(Build.MANUFACTURER.lowercase())
+            }
+
+            "openPowerManagerSettings" -> {
+                val opened = openManufacturerPowerSettings()
+                result.success(opened)
+            }
 
             else -> result.notImplemented()
         }
@@ -536,6 +597,106 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         binding.addRequestPermissionsResultListener(this)
     }
     override fun onDetachedFromActivity() { activity = null }
+
+    // ----- OEM Battery Kill Protection -----
+
+    /**
+     * Checks if manufacturer-specific auto-start permission might be available.
+     * Returns a map with manufacturer info and whether we can open their settings.
+     */
+    private fun checkAutoStartAvailability(): Map<String, Any> {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val hasAutoStart = manufacturer in listOf("xiaomi", "huawei", "oppo", "vivo", "samsung", "oneplus", "meizu", "asus", "letv")
+        return mapOf(
+            "manufacturer" to manufacturer,
+            "hasAutoStartSetting" to hasAutoStart,
+            "isBatteryOptimized" to isBatteryOptimized(),
+        )
+    }
+
+    private fun isBatteryOptimized(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        return !pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    /**
+     * Attempts to open the manufacturer-specific power/auto-start settings page.
+     * Returns true if an intent was launched, false otherwise.
+     */
+    private fun openManufacturerPowerSettings(): Boolean {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val intents = mutableListOf<Intent>()
+
+        when {
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") -> {
+                intents.add(Intent().setClassName("com.miui.securitycenter",
+                    "com.miui.permcenter.autostart.AutoStartManagementActivity"))
+                intents.add(Intent().setClassName("com.miui.powerkeeper",
+                    "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"))
+            }
+            manufacturer.contains("huawei") || manufacturer.contains("honor") -> {
+                intents.add(Intent().setClassName("com.huawei.systemmanager",
+                    "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"))
+                intents.add(Intent().setClassName("com.huawei.systemmanager",
+                    "com.huawei.systemmanager.optimize.process.ProtectActivity"))
+            }
+            manufacturer.contains("samsung") -> {
+                intents.add(Intent().setClassName("com.samsung.android.lool",
+                    "com.samsung.android.sm.battery.ui.BatteryActivity"))
+                intents.add(Intent().setClassName("com.samsung.android.sm",
+                    "com.samsung.android.sm.battery.ui.BatteryActivity"))
+            }
+            manufacturer.contains("oppo") || manufacturer.contains("realme") -> {
+                intents.add(Intent().setClassName("com.coloros.safecenter",
+                    "com.coloros.safecenter.startupapp.StartupAppListActivity"))
+                intents.add(Intent().setClassName("com.oppo.safe",
+                    "com.oppo.safe.permission.startup.StartupAppListActivity"))
+            }
+            manufacturer.contains("vivo") -> {
+                intents.add(Intent().setClassName("com.vivo.permissionmanager",
+                    "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"))
+                intents.add(Intent().setClassName("com.iqoo.secure",
+                    "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"))
+            }
+            manufacturer.contains("oneplus") -> {
+                intents.add(Intent().setClassName("com.oneplus.security",
+                    "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity"))
+            }
+            manufacturer.contains("asus") -> {
+                intents.add(Intent().setClassName("com.asus.mobilemanager",
+                    "com.asus.mobilemanager.autostart.AutoStartActivity"))
+            }
+            manufacturer.contains("meizu") -> {
+                intents.add(Intent().setClassName("com.meizu.safe",
+                    "com.meizu.safe.security.SHOW_APPSEC"))
+            }
+        }
+
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (intent.resolveActivity(context.packageManager) != null) {
+                    context.startActivity(intent)
+                    return true
+                }
+            } catch (_: Exception) {
+                continue
+            }
+        }
+
+        // Fallback: open generic battery optimization settings
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                return true
+            } catch (_: Exception) {}
+        }
+
+        return false
+    }
 }
 
 // ----- Stream Handler -----

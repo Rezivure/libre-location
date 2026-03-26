@@ -38,6 +38,7 @@ class MotionDetector(private val context: Context) {
 
     private var accelerometer: Sensor? = null
     private var significantMotionSensor: Sensor? = null
+    private var stepCounterSensor: Sensor? = null
 
     // Callbacks
     private var motionCallback: ((Boolean) -> Unit)? = null
@@ -71,9 +72,44 @@ class MotionDetector(private val context: Context) {
     private val recentVariances = mutableListOf<Double>()
     private val varianceWindowSize = 10
 
+    // Step counter for walking/running detection
+    private var lastStepCount: Int = -1
+    private var stepCountBaseline: Int = -1
+    private var recentStepsPerInterval: MutableList<Int> = mutableListOf()
+    private var lastStepTime: Long = 0L
+    private val stepCheckIntervalMs = 5_000L
+
+    // GPS speed for activity classification (updated externally)
+    @Volatile
+    var lastGpsSpeedMs: Double = 0.0
+
     private val accelerometerListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             processAccelerometerEvent(event)
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    private val stepCounterListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val totalSteps = event.values[0].toInt()
+            if (stepCountBaseline < 0) {
+                stepCountBaseline = totalSteps
+                lastStepCount = totalSteps
+                lastStepTime = System.currentTimeMillis()
+                return
+            }
+            val now = System.currentTimeMillis()
+            val elapsed = now - lastStepTime
+            if (elapsed >= stepCheckIntervalMs) {
+                val stepsDelta = totalSteps - lastStepCount
+                recentStepsPerInterval.add(stepsDelta)
+                if (recentStepsPerInterval.size > 6) { // keep ~30s of data
+                    recentStepsPerInterval.removeAt(0)
+                }
+                lastStepCount = totalSteps
+                lastStepTime = now
+            }
         }
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
@@ -130,6 +166,13 @@ class MotionDetector(private val context: Context) {
             sensorManager.requestTriggerSensor(significantMotionListener, it)
         }
 
+        // Step counter for walking/running detection (no Google Play Services)
+        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        stepCounterSensor?.let {
+            sensorManager.registerListener(stepCounterListener, it, SensorManager.SENSOR_DELAY_NORMAL)
+            Log.d(TAG, "Step counter sensor registered")
+        } ?: Log.d(TAG, "No step counter sensor available")
+
         handler.postDelayed(stopDetectionRunnable, 5_000L)
         Log.d(TAG, "Motion detector started (stopTimeout=${stopTimeoutMs}ms, threshold=$stillnessThreshold)")
     }
@@ -145,6 +188,10 @@ class MotionDetector(private val context: Context) {
         if (!isRunning) return
         isRunning = false
         sensorManager.unregisterListener(accelerometerListener)
+        sensorManager.unregisterListener(stepCounterListener)
+        stepCountBaseline = -1
+        lastStepCount = -1
+        recentStepsPerInterval.clear()
         significantMotionSensor?.let {
             try { sensorManager.cancelTriggerSensor(significantMotionListener, it) }
             catch (_: Exception) {}
@@ -258,22 +305,83 @@ class MotionDetector(private val context: Context) {
     }
 
     /**
-     * Estimates the current activity type from accelerometer variance patterns.
-     * This is a heuristic approach; for higher accuracy, use ActivityRecognitionClient
-     * (requires Google Play Services).
+     * Estimates activity by combining three signals:
+     * 1. Accelerometer variance (vibration/shake patterns)
+     * 2. GPS speed (m/s thresholds: <2 still, 2-7 walk, 7-15 run/cycle, >15 vehicle)
+     * 3. Step counter (steps per interval distinguishes walking from running)
+     *
+     * No Google Play Services — pure sensor APIs only.
      */
     private fun estimateActivity(currentVariance: Double) {
         if (recentVariances.size < varianceWindowSize) return
 
         val avgVariance = recentVariances.average()
-        val (type, confidence) = when {
-            avgVariance < stillnessThreshold -> "still" to 90
-            avgVariance < 1.0 -> "walking" to 70
-            avgVariance < 3.0 -> "walking" to 85
-            avgVariance < 8.0 -> "running" to 75
-            avgVariance < 15.0 -> "on_bicycle" to 60
-            else -> "in_vehicle" to 55
+        val speed = lastGpsSpeedMs
+        val stepsPerInterval = if (recentStepsPerInterval.isNotEmpty()) recentStepsPerInterval.average() else 0.0
+
+        // Speed-based classification (primary when GPS speed is available and reliable)
+        val speedType: String?
+        val speedConfidence: Int
+        when {
+            speed < 0.5 -> { speedType = "still"; speedConfidence = 85 }
+            speed < 2.0 -> { speedType = "still"; speedConfidence = 70 }
+            speed < 7.0 -> { speedType = "walking"; speedConfidence = 80 }
+            speed < 15.0 -> { speedType = "running"; speedConfidence = 75 }  // or cycling
+            else -> { speedType = "in_vehicle"; speedConfidence = 85 }
         }
+
+        // Step counter refinement
+        // stepsPerInterval is steps per ~5s window
+        // Walking: ~8-15 steps/5s (1.6-3 steps/s)
+        // Running: ~15-25 steps/5s (3-5 steps/s)
+        val stepType: String?
+        val stepConfidence: Int
+        when {
+            stepsPerInterval < 1.0 -> { stepType = "still"; stepConfidence = 80 }
+            stepsPerInterval < 15.0 -> { stepType = "walking"; stepConfidence = 85 }
+            stepsPerInterval < 30.0 -> { stepType = "running"; stepConfidence = 80 }
+            else -> { stepType = null; stepConfidence = 0 } // sensor noise or very fast
+        }
+
+        // Accelerometer variance classification
+        val accelType: String
+        val accelConfidence: Int
+        when {
+            avgVariance < stillnessThreshold -> { accelType = "still"; accelConfidence = 90 }
+            avgVariance < 1.5 -> { accelType = "walking"; accelConfidence = 70 }
+            avgVariance < 5.0 -> { accelType = "walking"; accelConfidence = 80 }
+            avgVariance < 10.0 -> { accelType = "running"; accelConfidence = 70 }
+            avgVariance < 20.0 -> { accelType = "on_bicycle"; accelConfidence = 55 }
+            else -> { accelType = "in_vehicle"; accelConfidence = 50 }
+        }
+
+        // Combine signals with weighted voting
+        val votes = mutableMapOf<String, Int>()
+
+        // Speed has highest weight when available (GPS is most reliable for vehicle detection)
+        if (speed > 0.5 && speedType != null) {
+            votes[speedType] = (votes[speedType] ?: 0) + speedConfidence * 3
+        }
+
+        // Step counter is very reliable for walking vs still vs running
+        if (stepType != null && stepConfidence > 0 && stepCounterSensor != null) {
+            votes[stepType] = (votes[stepType] ?: 0) + stepConfidence * 2
+        }
+
+        // Accelerometer is always available
+        votes[accelType] = (votes[accelType] ?: 0) + accelConfidence
+
+        // Distinguish cycling from running using speed (cycling is typically 10-30 km/h)
+        if (speed in 7.0..15.0 && avgVariance < 5.0) {
+            // Low variance + medium speed = cycling (smooth motion)
+            votes["on_bicycle"] = (votes["on_bicycle"] ?: 0) + 100
+        }
+
+        // Pick the winner
+        val (type, _) = votes.maxByOrNull { it.value } ?: ("unknown" to 0)
+        val totalWeight = votes.values.sum().toDouble()
+        val winnerWeight = votes[type] ?: 0
+        val confidence = if (totalWeight > 0) ((winnerWeight / totalWeight) * 100).toInt().coerceIn(0, 100) else 50
 
         if (type != lastActivityType) {
             lastActivityType = type

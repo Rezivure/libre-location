@@ -29,6 +29,9 @@
     <!-- Vibration for notifications -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Battery optimization exemption (OEM battery kill protection) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application>
         <!-- Foreground location service -->
         <service
@@ -57,9 +60,5 @@
             android:enabled="true"
             android:exported="false" />
 
-        <!-- Geofence broadcast receiver -->
-        <receiver
-            android:name=".GeofenceBroadcastReceiver"
-            android:exported="false" />
     </application>
 </manifest>

@@ -2,9 +2,12 @@ package io.rezivure.libre_location
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -44,6 +47,7 @@ class LocationManagerWrapper(
     private var cachedLocation: Location? = null
 
     private var providerChangeCallback: ((Map<String, Any?>) -> Unit)? = null
+    private var locationUpdateListeners = mutableListOf<(Location) -> Unit>()
     private var lastProviderState = mutableMapOf<String, Boolean>()
 
     private var heartbeatRunnable: Runnable? = null
@@ -269,6 +273,14 @@ class LocationManagerWrapper(
         providerChangeCallback = callback
     }
 
+    /**
+     * Registers a listener that receives every accepted location update.
+     * Used by GeofenceManager for distance-based geofence checking.
+     */
+    fun addLocationUpdateListener(listener: (Location) -> Unit) {
+        locationUpdateListeners.add(listener)
+    }
+
     // ----- Internal -----
 
     @SuppressLint("MissingPermission")
@@ -324,6 +336,11 @@ class LocationManagerWrapper(
         lastEmittedLocation = location
         lastEmittedTime = location.time
         cachedLocation = location
+
+        // Notify location update listeners (e.g., GeofenceManager for distance-based checking)
+        for (listener in locationUpdateListeners) {
+            listener(location)
+        }
 
         val map = locationToMap(location).toMutableMap()
         map["isMoving"] = isMoving
@@ -445,15 +462,36 @@ class LocationManagerWrapper(
         return result
     }
 
-    private fun locationToMap(location: Location): Map<String, Any?> = mapOf(
-        "latitude" to location.latitude,
-        "longitude" to location.longitude,
-        "altitude" to location.altitude,
-        "accuracy" to location.accuracy.toDouble(),
-        "speed" to location.speed.toDouble(),
-        "heading" to location.bearing.toDouble(),
-        "timestamp" to location.time,
-        "provider" to (location.provider ?: "unknown"),
-        "isMoving" to isMoving,
-    )
+    private fun locationToMap(location: Location): Map<String, Any?> {
+        val map = mutableMapOf<String, Any?>(
+            "latitude" to location.latitude,
+            "longitude" to location.longitude,
+            "altitude" to location.altitude,
+            "accuracy" to location.accuracy.toDouble(),
+            "speed" to location.speed.toDouble(),
+            "heading" to location.bearing.toDouble(),
+            "timestamp" to location.time,
+            "provider" to (location.provider ?: "unknown"),
+            "isMoving" to isMoving,
+        )
+
+        // Battery info via sticky broadcast (works without registering a receiver)
+        try {
+            val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (batteryIntent != null) {
+                val level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) {
+                    map["batteryLevel"] = (level * 100) / scale
+                }
+                val status = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                map["isCharging"] = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == BatteryManager.BATTERY_STATUS_FULL)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read battery info: ${e.message}")
+        }
+
+        return map
+    }
 }

@@ -1,22 +1,19 @@
 package io.rezivure.libre_location
 
-import android.annotation.SuppressLint
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.location.LocationManager
-import android.os.Build
+import android.location.Location
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 
 /**
- * Geofence manager using pure AOSP LocationManager.addProximityAlert().
- * NO Google Play Services.
+ * Custom geofence manager using distance-based checking on every location update.
+ * NO Google Play Services, NO deprecated ProximityAlert.
  *
- * Supports enter, exit, and dwell events (dwell via timer after enter).
+ * On each location update, calculates distance from every registered geofence center
+ * and triggers enter/exit/dwell events based on distance vs radius.
+ *
+ * Thread-safe: all state is accessed on the main looper via [handler].
  */
 class GeofenceManager(
     private val context: Context,
@@ -25,15 +22,12 @@ class GeofenceManager(
 
     companion object {
         private const val TAG = "LibreGeofenceMgr"
-        private const val ACTION_GEOFENCE = "io.rezivure.libre_location.GEOFENCE"
     }
 
-    private val locationManager: LocationManager =
-        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val handler = Handler(Looper.getMainLooper())
 
     private val geofences = mutableMapOf<String, GeofenceData>()
-    private val pendingIntents = mutableMapOf<String, PendingIntent>()
+    private val insideStates = mutableMapOf<String, Boolean>()  // true = currently inside
     private val dwellRunnables = mutableMapOf<String, Runnable>()
 
     data class GeofenceData(
@@ -45,23 +39,33 @@ class GeofenceManager(
         val dwellDurationMs: Long?,
     )
 
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            val id = intent?.getStringExtra("geofence_id") ?: return
-            val entering = intent.getBooleanExtra(LocationManager.KEY_PROXIMITY_ENTERING, false)
-            val geofence = geofences[id] ?: return
+    /**
+     * Called on every location update. Checks all geofences for enter/exit transitions.
+     * Should be called from [LocationManagerWrapper.processLocation].
+     */
+    fun onLocationUpdate(location: Location) {
+        for ((id, geofence) in geofences) {
+            val center = Location("geofence").apply {
+                latitude = geofence.latitude
+                longitude = geofence.longitude
+            }
+            val distance = location.distanceTo(center)
+            val wasInside = insideStates[id] ?: false
+            val isInside = distance <= geofence.radiusMeters
 
-            if (entering) {
-                // Enter event
+            if (isInside && !wasInside) {
+                // Entered
+                insideStates[id] = true
                 if (geofence.triggers.contains(0)) {
                     emitEvent(geofence, 0)
                 }
-                // Start dwell timer if dwell is a trigger
+                // Start dwell timer
                 if (geofence.triggers.contains(2) && geofence.dwellDurationMs != null && geofence.dwellDurationMs > 0) {
                     startDwellTimer(geofence)
                 }
-            } else {
-                // Exit event
+            } else if (!isInside && wasInside) {
+                // Exited
+                insideStates[id] = false
                 cancelDwellTimer(id)
                 if (geofence.triggers.contains(1)) {
                     emitEvent(geofence, 1)
@@ -70,16 +74,6 @@ class GeofenceManager(
         }
     }
 
-    init {
-        val filter = IntentFilter(ACTION_GEOFENCE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(receiver, filter)
-        }
-    }
-
-    @SuppressLint("MissingPermission")
     fun addGeofence(
         id: String,
         latitude: Double,
@@ -90,41 +84,15 @@ class GeofenceManager(
     ) {
         val data = GeofenceData(id, latitude, longitude, radiusMeters, triggers, dwellDurationMs)
         geofences[id] = data
-
-        val intent = Intent(ACTION_GEOFENCE).apply {
-            setPackage(context.packageName)
-            putExtra("geofence_id", id)
-        }
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        val pi = PendingIntent.getBroadcast(context, id.hashCode(), intent, flags)
-        pendingIntents[id] = pi
-
-        try {
-            locationManager.addProximityAlert(
-                latitude,
-                longitude,
-                radiusMeters,
-                -1, // no expiration
-                pi
-            )
-            Log.d(TAG, "Added geofence: $id at ($latitude, $longitude) r=${radiusMeters}m")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add geofence $id: ${e.message}")
-        }
+        // Initialize inside state as unknown (false) — will be determined on next location update
+        insideStates[id] = false
+        Log.d(TAG, "Added geofence: $id at ($latitude, $longitude) r=${radiusMeters}m")
     }
 
-    @SuppressLint("MissingPermission")
     fun removeGeofence(id: String) {
         cancelDwellTimer(id)
-        pendingIntents[id]?.let { pi ->
-            try {
-                locationManager.removeProximityAlert(pi)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to remove proximity alert for $id: ${e.message}")
-            }
-            pendingIntents.remove(id)
-        }
         geofences.remove(id)
+        insideStates.remove(id)
         Log.d(TAG, "Removed geofence: $id")
     }
 
@@ -149,10 +117,9 @@ class GeofenceManager(
     }
 
     fun destroy() {
-        try {
-            context.unregisterReceiver(receiver)
-        } catch (_: Exception) {}
         dwellRunnables.keys.toList().forEach { cancelDwellTimer(it) }
+        geofences.clear()
+        insideStates.clear()
     }
 
     // ----- Dwell Timer -----
@@ -160,7 +127,10 @@ class GeofenceManager(
     private fun startDwellTimer(geofence: GeofenceData) {
         cancelDwellTimer(geofence.id)
         val runnable = Runnable {
-            emitEvent(geofence, 2) // dwell
+            // Verify still inside before emitting dwell
+            if (insideStates[geofence.id] == true) {
+                emitEvent(geofence, 2)
+            }
             dwellRunnables.remove(geofence.id)
         }
         dwellRunnables[geofence.id] = runnable
@@ -186,12 +156,5 @@ class GeofenceManager(
             "transition" to transition,
             "timestamp" to System.currentTimeMillis(),
         ))
-    }
-}
-
-/** BroadcastReceiver declared in AndroidManifest for geofence events. */
-class GeofenceBroadcastReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context?, intent: Intent?) {
-        // Events are handled by the dynamic receiver in GeofenceManager
     }
 }

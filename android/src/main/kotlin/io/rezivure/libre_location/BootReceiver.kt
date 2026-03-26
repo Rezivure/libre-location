@@ -64,6 +64,15 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
             }
             Log.d(TAG, "LocationService started after boot")
+
+            // Start headless Dart engine if a callback is registered
+            if (config.enableHeadless && HeadlessCallbackDispatcher.hasCallback(context)) {
+                Log.d(TAG, "Initializing headless Dart engine for boot callbacks")
+                HeadlessCallbackDispatcher.dispatchHeartbeat(context, mapOf(
+                    "event" to "boot",
+                    "timestamp" to System.currentTimeMillis(),
+                ))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start LocationService after boot: ${e.message}")
         }
