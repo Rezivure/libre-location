@@ -1,240 +1,76 @@
-import '../enums/accuracy.dart';
-import '../enums/tracking_mode.dart';
-import '../enums/activity_type.dart';
-import '../enums/log_level.dart';
-import '../enums/location_authorization.dart';
 import 'notification_config.dart';
 import 'permission_rationale.dart';
 
-/// Configuration for background location tracking.
+/// Developer-facing configuration for libre_location.
+///
+/// This is intentionally simple. All the GPS tuning knobs (distance filters,
+/// accuracy levels, activity recognition intervals, etc.) are handled
+/// internally by [TrackingPreset] and the auto-adaptation engine.
+///
+/// You only need to configure things that are genuinely app-specific:
+///
+/// ```dart
+/// await LibreLocation.start(
+///   preset: TrackingPreset.balanced,
+///   config: LocationConfig(
+///     notification: NotificationConfig(
+///       title: 'My App',
+///       text: 'Tracking your location',
+///     ),
+///   ),
+/// );
+/// ```
 class LocationConfig {
-  final Accuracy accuracy;
-  final int intervalMs;
-  final double distanceFilter;
-  final TrackingMode mode;
-  final bool enableMotionDetection;
-  final bool stopOnTerminate;
-  final bool startOnBoot;
-  final bool enableHeadless;
-  final int stillnessTimeoutMin;
-  final int stillnessDelayMs;
-  final double stillnessRadiusMeters;
-  final bool skipStillnessDetection;
-  final bool skipActivityUpdates;
-  final int motionConfirmDelayMs;
-  final bool significantChangesOnly;
-  final bool isMoving;
-  final int activityCheckIntervalMs;
-  final int activityConfidenceThreshold;
-  final int heartbeatInterval;
-  final ActivityType activityType;
-  final bool pausesLocationUpdatesAutomatically;
-  final bool keepAwake;
-  final int retentionDays;
-  final int retentionMaxRecords;
-  final bool debug;
-  final LogLevel logLevel;
+  /// Android foreground service notification. Required for reliable
+  /// background tracking on Android 8+.
   final NotificationConfig? notification;
-  final PermissionRationale? backgroundPermissionRationale;
-  final LocationAuthorizationRequest locationAuthorizationRequest;
 
-  // GPS filtering / smoothing
-  final bool locationFilterEnabled;
-  final double maxAccuracy;
-  final double maxSpeed;
+  /// Android background permission rationale dialog text.
+  final PermissionRationale? backgroundPermissionRationale;
+
+  /// Whether to stop tracking when the app is terminated.
+  /// Default: `false` (keeps tracking after app close).
+  final bool stopOnTerminate;
+
+  /// Whether to restart tracking after device reboot.
+  /// Default: `true`.
+  final bool startOnBoot;
+
+  /// Whether to enable headless Dart callbacks after app termination (Android).
+  /// Default: `true`.
+  final bool enableHeadless;
+
+  /// Enable debug logging. Default: `false`.
+  final bool debug;
 
   const LocationConfig({
-    this.accuracy = Accuracy.high,
-    this.intervalMs = 60000,
-    this.distanceFilter = 10.0,
-    this.mode = TrackingMode.balanced,
-    this.enableMotionDetection = true,
-    this.stopOnTerminate = true,
-    this.startOnBoot = false,
-    this.enableHeadless = false,
-    this.stillnessTimeoutMin = 5,
-    this.stillnessDelayMs = 0,
-    this.stillnessRadiusMeters = 25.0,
-    this.skipStillnessDetection = false,
-    this.skipActivityUpdates = false,
-    this.motionConfirmDelayMs = 0,
-    this.significantChangesOnly = false,
-    this.isMoving = false,
-    this.activityCheckIntervalMs = 10000,
-    this.activityConfidenceThreshold = 75,
-    this.heartbeatInterval = 0,
-    this.activityType = ActivityType.other,
-    this.pausesLocationUpdatesAutomatically = false,
-    this.keepAwake = false,
-    this.retentionDays = 1,
-    this.retentionMaxRecords = -1,
-    this.debug = false,
-    this.logLevel = LogLevel.off,
     this.notification,
     this.backgroundPermissionRationale,
-    this.locationAuthorizationRequest = LocationAuthorizationRequest.always,
-    this.locationFilterEnabled = true,
-    this.maxAccuracy = 100.0,
-    this.maxSpeed = 83.33,
+    this.stopOnTerminate = false,
+    this.startOnBoot = true,
+    this.enableHeadless = true,
+    this.debug = false,
   });
 
-  Map<String, dynamic> toMap() {
-    return {
-      'accuracy': accuracy.index,
-      'intervalMs': intervalMs,
-      'distanceFilter': distanceFilter,
-      'mode': mode.index,
-      'enableMotionDetection': enableMotionDetection,
-      'stopOnTerminate': stopOnTerminate,
-      'startOnBoot': startOnBoot,
-      'enableHeadless': enableHeadless,
-      'stillnessTimeoutMin': stillnessTimeoutMin,
-      'stillnessDelayMs': stillnessDelayMs,
-      'stillnessRadiusMeters': stillnessRadiusMeters,
-      'skipStillnessDetection': skipStillnessDetection,
-      'skipActivityUpdates': skipActivityUpdates,
-      'motionConfirmDelayMs': motionConfirmDelayMs,
-      'significantChangesOnly': significantChangesOnly,
-      'isMoving': isMoving,
-      'activityCheckIntervalMs': activityCheckIntervalMs,
-      'activityConfidenceThreshold': activityConfidenceThreshold,
-      'heartbeatInterval': heartbeatInterval,
-      'activityType': activityType.index,
-      'pausesLocationUpdatesAutomatically': pausesLocationUpdatesAutomatically,
-      'keepAwake': keepAwake,
-      'retentionDays': retentionDays,
-      'retentionMaxRecords': retentionMaxRecords,
-      'debug': debug,
-      'logLevel': logLevel.index,
-      if (notification != null) ...{
-        'notification': notification!.toMap(),
-        // Flatten for Android native compatibility
-        'notificationTitle': notification!.title,
-        'notificationBody': notification!.text,
-        'notificationSticky': notification!.sticky,
-        'notificationPriority': notification!.priority.index,
-      },
-      if (backgroundPermissionRationale != null)
-        'backgroundPermissionRationale': backgroundPermissionRationale!.toMap(),
-      'locationAuthorizationRequest': locationAuthorizationRequest.index,
-      'locationFilterEnabled': locationFilterEnabled,
-      'maxAccuracy': maxAccuracy,
-      'maxSpeed': maxSpeed,
-    };
-  }
-
-  factory LocationConfig.fromMap(Map<String, dynamic> map) {
-    return LocationConfig(
-      accuracy: Accuracy.values[map['accuracy'] as int? ?? 0],
-      intervalMs: map['intervalMs'] as int? ?? 60000,
-      distanceFilter: (map['distanceFilter'] as num?)?.toDouble() ?? 10.0,
-      mode: TrackingMode.values[map['mode'] as int? ?? 1],
-      enableMotionDetection: map['enableMotionDetection'] as bool? ?? true,
-      stopOnTerminate: map['stopOnTerminate'] as bool? ?? true,
-      startOnBoot: map['startOnBoot'] as bool? ?? false,
-      enableHeadless: map['enableHeadless'] as bool? ?? false,
-      stillnessTimeoutMin: map['stillnessTimeoutMin'] as int? ?? 5,
-      stillnessDelayMs: map['stillnessDelayMs'] as int? ?? 0,
-      stillnessRadiusMeters: (map['stillnessRadiusMeters'] as num?)?.toDouble() ?? 25.0,
-      skipStillnessDetection: map['skipStillnessDetection'] as bool? ?? false,
-      skipActivityUpdates: map['skipActivityUpdates'] as bool? ?? false,
-      motionConfirmDelayMs: map['motionConfirmDelayMs'] as int? ?? 0,
-      significantChangesOnly: map['significantChangesOnly'] as bool? ?? false,
-      isMoving: map['isMoving'] as bool? ?? false,
-      activityCheckIntervalMs: map['activityCheckIntervalMs'] as int? ?? 10000,
-      activityConfidenceThreshold: map['activityConfidenceThreshold'] as int? ?? 75,
-      heartbeatInterval: map['heartbeatInterval'] as int? ?? 0,
-      activityType: ActivityType.values[map['activityType'] as int? ?? 0],
-      pausesLocationUpdatesAutomatically: map['pausesLocationUpdatesAutomatically'] as bool? ?? false,
-      keepAwake: map['keepAwake'] as bool? ?? false,
-      retentionDays: map['retentionDays'] as int? ?? 1,
-      retentionMaxRecords: map['retentionMaxRecords'] as int? ?? -1,
-      debug: map['debug'] as bool? ?? false,
-      logLevel: LogLevel.values[map['logLevel'] as int? ?? 0],
-      notification: map['notification'] != null
-          ? NotificationConfig.fromMap(Map<String, dynamic>.from(map['notification'] as Map))
-          : null,
-      backgroundPermissionRationale: map['backgroundPermissionRationale'] != null
-          ? PermissionRationale.fromMap(Map<String, dynamic>.from(map['backgroundPermissionRationale'] as Map))
-          : null,
-      locationAuthorizationRequest: LocationAuthorizationRequest.values[map['locationAuthorizationRequest'] as int? ?? 0],
-      locationFilterEnabled: map['locationFilterEnabled'] as bool? ?? true,
-      maxAccuracy: (map['maxAccuracy'] as num?)?.toDouble() ?? 100.0,
-      maxSpeed: (map['maxSpeed'] as num?)?.toDouble() ?? 83.33,
-    );
-  }
-
   LocationConfig copyWith({
-    Accuracy? accuracy,
-    int? intervalMs,
-    double? distanceFilter,
-    TrackingMode? mode,
-    bool? enableMotionDetection,
+    NotificationConfig? notification,
+    PermissionRationale? backgroundPermissionRationale,
     bool? stopOnTerminate,
     bool? startOnBoot,
     bool? enableHeadless,
-    int? stillnessTimeoutMin,
-    int? stillnessDelayMs,
-    double? stillnessRadiusMeters,
-    bool? skipStillnessDetection,
-    bool? skipActivityUpdates,
-    int? motionConfirmDelayMs,
-    bool? significantChangesOnly,
-    bool? isMoving,
-    int? activityCheckIntervalMs,
-    int? activityConfidenceThreshold,
-    int? heartbeatInterval,
-    ActivityType? activityType,
-    bool? pausesLocationUpdatesAutomatically,
-    bool? keepAwake,
-    int? retentionDays,
-    int? retentionMaxRecords,
     bool? debug,
-    LogLevel? logLevel,
-    NotificationConfig? notification,
-    PermissionRationale? backgroundPermissionRationale,
-    LocationAuthorizationRequest? locationAuthorizationRequest,
-    bool? locationFilterEnabled,
-    double? maxAccuracy,
-    double? maxSpeed,
   }) {
     return LocationConfig(
-      accuracy: accuracy ?? this.accuracy,
-      intervalMs: intervalMs ?? this.intervalMs,
-      distanceFilter: distanceFilter ?? this.distanceFilter,
-      mode: mode ?? this.mode,
-      enableMotionDetection: enableMotionDetection ?? this.enableMotionDetection,
+      notification: notification ?? this.notification,
+      backgroundPermissionRationale: backgroundPermissionRationale ?? this.backgroundPermissionRationale,
       stopOnTerminate: stopOnTerminate ?? this.stopOnTerminate,
       startOnBoot: startOnBoot ?? this.startOnBoot,
       enableHeadless: enableHeadless ?? this.enableHeadless,
-      stillnessTimeoutMin: stillnessTimeoutMin ?? this.stillnessTimeoutMin,
-      stillnessDelayMs: stillnessDelayMs ?? this.stillnessDelayMs,
-      stillnessRadiusMeters: stillnessRadiusMeters ?? this.stillnessRadiusMeters,
-      skipStillnessDetection: skipStillnessDetection ?? this.skipStillnessDetection,
-      skipActivityUpdates: skipActivityUpdates ?? this.skipActivityUpdates,
-      motionConfirmDelayMs: motionConfirmDelayMs ?? this.motionConfirmDelayMs,
-      significantChangesOnly: significantChangesOnly ?? this.significantChangesOnly,
-      isMoving: isMoving ?? this.isMoving,
-      activityCheckIntervalMs: activityCheckIntervalMs ?? this.activityCheckIntervalMs,
-      activityConfidenceThreshold: activityConfidenceThreshold ?? this.activityConfidenceThreshold,
-      heartbeatInterval: heartbeatInterval ?? this.heartbeatInterval,
-      activityType: activityType ?? this.activityType,
-      pausesLocationUpdatesAutomatically: pausesLocationUpdatesAutomatically ?? this.pausesLocationUpdatesAutomatically,
-      keepAwake: keepAwake ?? this.keepAwake,
-      retentionDays: retentionDays ?? this.retentionDays,
-      retentionMaxRecords: retentionMaxRecords ?? this.retentionMaxRecords,
       debug: debug ?? this.debug,
-      logLevel: logLevel ?? this.logLevel,
-      notification: notification ?? this.notification,
-      backgroundPermissionRationale: backgroundPermissionRationale ?? this.backgroundPermissionRationale,
-      locationAuthorizationRequest: locationAuthorizationRequest ?? this.locationAuthorizationRequest,
-      locationFilterEnabled: locationFilterEnabled ?? this.locationFilterEnabled,
-      maxAccuracy: maxAccuracy ?? this.maxAccuracy,
-      maxSpeed: maxSpeed ?? this.maxSpeed,
     );
   }
 
   @override
   String toString() =>
-      'LocationConfig(accuracy: ${accuracy.name}, distanceFilter: $distanceFilter, mode: ${mode.name})';
+      'LocationConfig(stopOnTerminate: $stopOnTerminate, startOnBoot: $startOnBoot, debug: $debug)';
 }

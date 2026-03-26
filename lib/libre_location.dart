@@ -5,6 +5,7 @@ export 'src/libre_location_platform.dart';
 export 'src/libre_location_method_channel.dart';
 export 'src/models/position.dart';
 export 'src/models/location_config.dart';
+export 'src/models/native_config.dart';
 export 'src/models/geofence.dart';
 export 'src/models/geofence_event.dart';
 export 'src/models/activity_event.dart';
@@ -31,20 +32,17 @@ import 'src/models/geofence_event.dart';
 import 'src/models/activity_event.dart';
 import 'src/models/provider_event.dart';
 import 'src/models/heartbeat_event.dart';
-import 'src/models/notification_config.dart';
-import 'src/models/permission_rationale.dart';
 import 'src/enums/accuracy.dart';
-import 'src/enums/log_level.dart';
 import 'src/tracking_preset.dart';
 import 'src/auto_adapter.dart';
 import 'src/logger.dart';
 
 /// The main entry point for the libre_location plugin.
 ///
-/// ## Quick Start (Preset API)
+/// ## Quick Start
 ///
 /// ```dart
-/// // Dead simple — uses balanced preset by default
+/// // Start tracking — that's it
 /// await LibreLocation.start();
 ///
 /// // Or pick a preset
@@ -59,13 +57,6 @@ import 'src/logger.dart';
 /// // Manual ping
 /// final pos = await LibreLocation.getCurrentPosition(samples: 3);
 /// ```
-///
-/// ## Power User API
-///
-/// ```dart
-/// // Full manual control
-/// await LibreLocation.start(config: LocationConfig(...));
-/// ```
 class LibreLocation {
   static AutoAdapter? _adapter;
 
@@ -73,56 +64,34 @@ class LibreLocation {
   // Preset API (recommended)
   // ───────────────────────────────────────────
 
-  /// Start tracking with a preset or custom config.
+  /// Start tracking with a preset.
   ///
-  /// If neither [preset] nor [config] is provided, defaults to
-  /// [TrackingPreset.balanced] with auto-adaptation enabled.
+  /// If [preset] is not provided, defaults to [TrackingPreset.balanced].
+  ///
+  /// Use [config] to set app-specific options like notification text,
+  /// stop-on-terminate behavior, and debug mode. All GPS tuning is
+  /// handled automatically by the preset.
   ///
   /// When using a preset, the plugin automatically:
   /// - Adjusts config when the app moves to foreground/background
   /// - Adapts to detected activity (driving/walking/cycling/still)
   /// - Optimizes GPS polling when stationary
-  ///
-  /// When using a custom [config], auto-adaptation is disabled.
   static Future<void> start({
     TrackingPreset? preset,
-    LocationConfig? config,
-    NotificationConfig? notification,
-    PermissionRationale? backgroundPermissionRationale,
-    bool stopOnTerminate = false,
-    bool startOnBoot = true,
-    bool enableHeadless = true,
-    bool debug = false,
-    LogLevel logLevel = LogLevel.off,
+    LocationConfig config = const LocationConfig(),
   }) async {
     // Stop any existing adapter
     _adapter?.stop();
     _adapter = null;
 
-    if (config != null) {
-      // Power user mode — no auto-adaptation
-      await LibreLocationPlatform.instance.startTracking(config);
-      return;
-    }
-
-    // Preset mode (default: balanced)
     final effectivePreset = preset ?? TrackingPreset.balanced;
-    final baseConfig = PresetConfig.baseConfig(
-      effectivePreset,
-      notification: notification,
-      backgroundPermissionRationale: backgroundPermissionRationale,
-      stopOnTerminate: stopOnTerminate,
-      startOnBoot: startOnBoot,
-      enableHeadless: enableHeadless,
-      debug: debug,
-      logLevel: logLevel,
-    );
+    final nativeConfig = PresetConfig.buildNativeConfig(effectivePreset, config);
 
-    // Start native tracking with the base config
-    await LibreLocationPlatform.instance.startTracking(baseConfig);
+    // Start native tracking
+    await LibreLocationPlatform.instance.startTracking(nativeConfig);
 
     // Start auto-adaptation
-    _adapter = AutoAdapter(effectivePreset, baseConfig);
+    _adapter = AutoAdapter(effectivePreset, config, nativeConfig);
     _adapter!.start();
   }
 
@@ -141,21 +110,12 @@ class LibreLocation {
     await _adapter!.setPreset(preset);
   }
 
-  /// Returns the current preset, or null if using a custom config.
+  /// Returns the current preset, or null if not tracking.
   static TrackingPreset? get currentPreset => _adapter?.preset;
 
   // ───────────────────────────────────────────
-  // Legacy / Power User API
+  // Core API
   // ───────────────────────────────────────────
-
-  /// Start tracking with a full [LocationConfig].
-  ///
-  /// Prefer [start] with a preset for most use cases.
-  static Future<void> startTracking(LocationConfig config) {
-    _adapter?.stop();
-    _adapter = null;
-    return LibreLocationPlatform.instance.startTracking(config);
-  }
 
   static Future<void> stop() {
     _adapter?.stop();
@@ -182,12 +142,8 @@ class LibreLocation {
     );
   }
 
-  static Future<void> setConfig(LocationConfig config) {
-    return LibreLocationPlatform.instance.setConfig(config);
-  }
-
   // ───────────────────────────────────────────
-  // Streams (aliased for cleaner API)
+  // Streams
   // ───────────────────────────────────────────
 
   /// Stream of location updates. This is the primary stream for tracking.
@@ -238,36 +194,25 @@ class LibreLocation {
     return LibreLocationPlatform.instance.requestPermission();
   }
 
-  /// Request "Always" (background) location permission.
-  ///
-  /// This handles the upgrade flow from "When In Use" → "Always":
-  /// - iOS: Two-step process. If already denied, returns deniedForever.
-  /// - Android 10+: Requests ACCESS_BACKGROUND_LOCATION separately.
-  /// - Android 11+: May need to send user to Settings.
   static Future<LocationPermission> requestAlwaysPermission() {
     return LibreLocationPlatform.instance.requestAlwaysPermission();
   }
 
-  /// Opens the app's system settings page where the user can change permissions.
   static Future<bool> openAppSettings() {
     return LibreLocationPlatform.instance.openAppSettings();
   }
 
-  /// Opens the device location settings (e.g., to enable GPS).
   static Future<bool> openLocationSettings() {
     return LibreLocationPlatform.instance.openLocationSettings();
   }
 
-  /// Stream that fires when location permission status changes.
   static Stream<LocationPermission> get onPermissionChange =>
       LibreLocationPlatform.instance.permissionChangeStream;
 
-  /// Android-only: whether to show a rationale before requesting permission.
   static Future<bool> shouldShowRequestRationale() {
     return LibreLocationPlatform.instance.shouldShowRequestRationale();
   }
 
-  /// Checks if device-level location services (GPS) are enabled.
   static Future<bool> isLocationServiceEnabled() {
     return LibreLocationPlatform.instance.isLocationServiceEnabled();
   }
@@ -334,7 +279,7 @@ class LibreLocation {
   // Utilities
   // ───────────────────────────────────────────
 
-  static Future<void> setMoving(bool isMoving) {
+  static Future<void> changePace(bool isMoving) {
     return LibreLocationPlatform.instance.setMoving(isMoving);
   }
 

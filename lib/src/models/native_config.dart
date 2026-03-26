@@ -20,22 +20,22 @@ class NativeConfig {
   final bool stopOnTerminate;
   final bool startOnBoot;
   final bool enableHeadless;
-  final int stillnessTimeoutMin;
-  final int stillnessDelayMs;
-  final double stillnessRadiusMeters;
-  final bool skipStillnessDetection;
-  final bool skipActivityUpdates;
-  final int motionConfirmDelayMs;
-  final bool significantChangesOnly;
-  final bool initiallyMoving;
-  final int activityCheckIntervalMs;
-  final int activityConfidenceThreshold;
+  final int stopTimeout;
+  final int stopDetectionDelay;
+  final double stationaryRadius;
+  final bool disableStopDetection;
+  final bool disableMotionActivityUpdates;
+  final int motionTriggerDelay;
+  final bool useSignificantChangesOnly;
+  final bool isMoving;
+  final int activityRecognitionInterval;
+  final int minimumActivityRecognitionConfidence;
   final int heartbeatInterval;
   final ActivityType activityType;
   final bool pausesLocationUpdatesAutomatically;
-  final bool keepAwake;
-  final int retentionDays;
-  final int retentionMaxRecords;
+  final bool preventSuspend;
+  final int maxDaysToPersist;
+  final int maxRecordsToPersist;
   final bool debug;
   final LogLevel logLevel;
   final NotificationConfig? notification;
@@ -54,22 +54,22 @@ class NativeConfig {
     this.stopOnTerminate = true,
     this.startOnBoot = false,
     this.enableHeadless = false,
-    this.stillnessTimeoutMin = 5,
-    this.stillnessDelayMs = 0,
-    this.stillnessRadiusMeters = 25.0,
-    this.skipStillnessDetection = false,
-    this.skipActivityUpdates = false,
-    this.motionConfirmDelayMs = 0,
-    this.significantChangesOnly = false,
-    this.initiallyMoving = false,
-    this.activityCheckIntervalMs = 10000,
-    this.activityConfidenceThreshold = 75,
+    this.stopTimeout = 5,
+    this.stopDetectionDelay = 0,
+    this.stationaryRadius = 25.0,
+    this.disableStopDetection = false,
+    this.disableMotionActivityUpdates = false,
+    this.motionTriggerDelay = 0,
+    this.useSignificantChangesOnly = false,
+    this.isMoving = false,
+    this.activityRecognitionInterval = 10000,
+    this.minimumActivityRecognitionConfidence = 75,
     this.heartbeatInterval = 0,
     this.activityType = ActivityType.other,
     this.pausesLocationUpdatesAutomatically = false,
-    this.keepAwake = false,
-    this.retentionDays = 1,
-    this.retentionMaxRecords = -1,
+    this.preventSuspend = false,
+    this.maxDaysToPersist = 1,
+    this.maxRecordsToPersist = -1,
     this.debug = false,
     this.logLevel = LogLevel.off,
     this.notification,
@@ -90,22 +90,22 @@ class NativeConfig {
       'stopOnTerminate': stopOnTerminate,
       'startOnBoot': startOnBoot,
       'enableHeadless': enableHeadless,
-      'stillnessTimeoutMin': stillnessTimeoutMin,
-      'stillnessDelayMs': stillnessDelayMs,
-      'stillnessRadiusMeters': stillnessRadiusMeters,
-      'skipStillnessDetection': skipStillnessDetection,
-      'skipActivityUpdates': skipActivityUpdates,
-      'motionConfirmDelayMs': motionConfirmDelayMs,
-      'significantChangesOnly': significantChangesOnly,
-      'initiallyMoving': initiallyMoving,
-      'activityCheckIntervalMs': activityCheckIntervalMs,
-      'activityConfidenceThreshold': activityConfidenceThreshold,
+      'stopTimeout': stopTimeout,
+      'stopDetectionDelay': stopDetectionDelay,
+      'stationaryRadius': stationaryRadius,
+      'disableStopDetection': disableStopDetection,
+      'disableMotionActivityUpdates': disableMotionActivityUpdates,
+      'motionTriggerDelay': motionTriggerDelay,
+      'useSignificantChangesOnly': useSignificantChangesOnly,
+      'isMoving': isMoving,
+      'activityRecognitionInterval': activityRecognitionInterval,
+      'minimumActivityRecognitionConfidence': minimumActivityRecognitionConfidence,
       'heartbeatInterval': heartbeatInterval,
       'activityType': activityType.index,
       'pausesLocationUpdatesAutomatically': pausesLocationUpdatesAutomatically,
-      'keepAwake': keepAwake,
-      'retentionDays': retentionDays,
-      'retentionMaxRecords': retentionMaxRecords,
+      'preventSuspend': preventSuspend,
+      'maxDaysToPersist': maxDaysToPersist,
+      'maxRecordsToPersist': maxRecordsToPersist,
       'debug': debug,
       'logLevel': logLevel.index,
       if (notification != null) ...{
@@ -133,22 +133,22 @@ class NativeConfig {
     bool? stopOnTerminate,
     bool? startOnBoot,
     bool? enableHeadless,
-    int? stillnessTimeoutMin,
-    int? stillnessDelayMs,
-    double? stillnessRadiusMeters,
-    bool? skipStillnessDetection,
-    bool? skipActivityUpdates,
-    int? motionConfirmDelayMs,
-    bool? significantChangesOnly,
-    bool? initiallyMoving,
-    int? activityCheckIntervalMs,
-    int? activityConfidenceThreshold,
+    int? stopTimeout,
+    int? stopDetectionDelay,
+    double? stationaryRadius,
+    bool? disableStopDetection,
+    bool? disableMotionActivityUpdates,
+    int? motionTriggerDelay,
+    bool? useSignificantChangesOnly,
+    bool? isMoving,
+    int? activityRecognitionInterval,
+    int? minimumActivityRecognitionConfidence,
     int? heartbeatInterval,
     ActivityType? activityType,
     bool? pausesLocationUpdatesAutomatically,
-    bool? keepAwake,
-    int? retentionDays,
-    int? retentionMaxRecords,
+    bool? preventSuspend,
+    int? maxDaysToPersist,
+    int? maxRecordsToPersist,
     bool? debug,
     LogLevel? logLevel,
     NotificationConfig? notification,
@@ -167,22 +167,22 @@ class NativeConfig {
       stopOnTerminate: stopOnTerminate ?? this.stopOnTerminate,
       startOnBoot: startOnBoot ?? this.startOnBoot,
       enableHeadless: enableHeadless ?? this.enableHeadless,
-      stillnessTimeoutMin: stillnessTimeoutMin ?? this.stillnessTimeoutMin,
-      stillnessDelayMs: stillnessDelayMs ?? this.stillnessDelayMs,
-      stillnessRadiusMeters: stillnessRadiusMeters ?? this.stillnessRadiusMeters,
-      skipStillnessDetection: skipStillnessDetection ?? this.skipStillnessDetection,
-      skipActivityUpdates: skipActivityUpdates ?? this.skipActivityUpdates,
-      motionConfirmDelayMs: motionConfirmDelayMs ?? this.motionConfirmDelayMs,
-      significantChangesOnly: significantChangesOnly ?? this.significantChangesOnly,
-      initiallyMoving: initiallyMoving ?? this.initiallyMoving,
-      activityCheckIntervalMs: activityCheckIntervalMs ?? this.activityCheckIntervalMs,
-      activityConfidenceThreshold: activityConfidenceThreshold ?? this.activityConfidenceThreshold,
+      stopTimeout: stopTimeout ?? this.stopTimeout,
+      stopDetectionDelay: stopDetectionDelay ?? this.stopDetectionDelay,
+      stationaryRadius: stationaryRadius ?? this.stationaryRadius,
+      disableStopDetection: disableStopDetection ?? this.disableStopDetection,
+      disableMotionActivityUpdates: disableMotionActivityUpdates ?? this.disableMotionActivityUpdates,
+      motionTriggerDelay: motionTriggerDelay ?? this.motionTriggerDelay,
+      useSignificantChangesOnly: useSignificantChangesOnly ?? this.useSignificantChangesOnly,
+      isMoving: isMoving ?? this.isMoving,
+      activityRecognitionInterval: activityRecognitionInterval ?? this.activityRecognitionInterval,
+      minimumActivityRecognitionConfidence: minimumActivityRecognitionConfidence ?? this.minimumActivityRecognitionConfidence,
       heartbeatInterval: heartbeatInterval ?? this.heartbeatInterval,
       activityType: activityType ?? this.activityType,
       pausesLocationUpdatesAutomatically: pausesLocationUpdatesAutomatically ?? this.pausesLocationUpdatesAutomatically,
-      keepAwake: keepAwake ?? this.keepAwake,
-      retentionDays: retentionDays ?? this.retentionDays,
-      retentionMaxRecords: retentionMaxRecords ?? this.retentionMaxRecords,
+      preventSuspend: preventSuspend ?? this.preventSuspend,
+      maxDaysToPersist: maxDaysToPersist ?? this.maxDaysToPersist,
+      maxRecordsToPersist: maxRecordsToPersist ?? this.maxRecordsToPersist,
       debug: debug ?? this.debug,
       logLevel: logLevel ?? this.logLevel,
       notification: notification ?? this.notification,
