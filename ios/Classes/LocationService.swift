@@ -389,6 +389,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         let data = locationToMap(location)
         lastEmittedLocation = location
 
+        // Flush any pending motion change now that we have a position
+        flushPendingMotionChange()
+
         // One-shot handling
         if !oneShotCallbacks.isEmpty {
             oneShotSamples.append(data)
@@ -576,28 +579,35 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Motion Change Emission
 
+    /// Queued motion change state waiting for a position fix.
+    /// When `emitMotionChange` is called but no position is available yet,
+    /// we queue the isMoving flag, request a one-shot location, and emit
+    /// the motion change event once the first position arrives.
+    private var pendingMotionChange: Bool? = nil
+
     /// Emits a motion change event containing the current position with isMoving flag.
     /// This must match Dart's Position.fromMap() format since motionChangeStream maps to Stream<Position>.
+    ///
+    /// If no position is available yet, queues the motion change and requests a
+    /// one-shot location. The queued event is emitted when the first position arrives.
     private func emitMotionChange(isMoving: Bool) {
-        var data: [String: Any]
         if let loc = lastEmittedLocation {
-            data = locationToMap(loc)
+            var data = locationToMap(loc)
+            data["isMoving"] = isMoving
+            onMotionChange?(data)
         } else {
-            // No position available yet — emit a minimal position
-            data = [
-                "latitude": 0.0,
-                "longitude": 0.0,
-                "altitude": 0.0,
-                "accuracy": 0.0,
-                "speed": 0.0,
-                "heading": 0.0,
-                "timestamp": Int64(Date().timeIntervalSince1970 * 1000),
-                "provider": "core_location",
-                "isMoving": isMoving,
-            ]
-            return // Don't emit if we have no real position
+            // No position available yet — queue and request a one-shot fix
+            pendingMotionChange = isMoving
+            locationManager.requestLocation()
         }
-        data["isMoving"] = isMoving
+    }
+
+    /// Called after a location is received to flush any pending motion change event.
+    private func flushPendingMotionChange() {
+        guard let pending = pendingMotionChange, let loc = lastEmittedLocation else { return }
+        pendingMotionChange = nil
+        var data = locationToMap(loc)
+        data["isMoving"] = pending
         onMotionChange?(data)
     }
 
