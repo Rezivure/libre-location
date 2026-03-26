@@ -20,6 +20,7 @@ export 'src/enums/activity_type.dart';
 export 'src/enums/log_level.dart';
 export 'src/enums/location_authorization.dart';
 export 'src/enums/notification_priority.dart';
+export 'src/logger.dart';
 
 import 'src/libre_location_platform.dart';
 import 'src/models/position.dart';
@@ -30,6 +31,7 @@ import 'src/models/activity_event.dart';
 import 'src/models/provider_event.dart';
 import 'src/models/heartbeat_event.dart';
 import 'src/enums/accuracy.dart';
+import 'src/logger.dart';
 
 /// The main entry point for the libre_location plugin.
 class LibreLocation {
@@ -159,6 +161,57 @@ class LibreLocation {
   /// Returns `true` if a settings page was opened.
   static Future<bool> openPowerManagerSettings() {
     return LibreLocationPlatform.instance.openPowerManagerSettings();
+  }
+
+  /// Stream that emits `true` when power save / low power mode is enabled,
+  /// `false` when disabled.
+  static Stream<bool> get powerSaveChangeStream {
+    return LibreLocationPlatform.instance.powerSaveChangeStream;
+  }
+
+  /// Requests temporary full accuracy authorization on iOS 14+.
+  ///
+  /// [purposeKey] must match a key defined in
+  /// `NSLocationTemporaryUsageDescriptionDictionary` in Info.plist.
+  ///
+  /// Returns 0 for fullAccuracy, 1 for reducedAccuracy.
+  static Future<int> requestTemporaryFullAccuracy({required String purposeKey}) {
+    return LibreLocationPlatform.instance.requestTemporaryFullAccuracy(purposeKey: purposeKey);
+  }
+
+  /// Manually overrides the motion state.
+  ///
+  /// Pass `true` to force moving mode (active GPS tracking).
+  /// Pass `false` to force stationary mode (reduced power).
+  static Future<void> changePace(bool isMoving) {
+    return LibreLocationPlatform.instance.changePace(isMoving);
+  }
+
+  /// Returns recent log entries from the in-memory log buffer.
+  ///
+  /// Each entry contains `timestamp`, `level`, and `message`.
+  /// Also fetches native-side logs when available.
+  static Future<List<Map<String, dynamic>>> getLog() async {
+    // Combine Dart-side logs with native-side logs
+    final dartLogs = LibreLocationLogger.getLog();
+    try {
+      final nativeLogs = await LibreLocationPlatform.instance.getLog();
+      return [...dartLogs, ...nativeLogs];
+    } catch (_) {
+      return dartLogs;
+    }
+  }
+
+  /// Checks whether the POST_NOTIFICATIONS permission is granted (Android 13+).
+  /// Returns `true` on iOS and pre-Android 13 devices.
+  static Future<bool> checkNotificationPermission() {
+    return LibreLocationPlatform.instance.checkNotificationPermission();
+  }
+
+  /// Requests the POST_NOTIFICATIONS runtime permission (Android 13+).
+  /// Returns `true` if granted. No-op on iOS and pre-Android 13.
+  static Future<bool> requestNotificationPermission() {
+    return LibreLocationPlatform.instance.requestNotificationPermission();
   }
 }
 

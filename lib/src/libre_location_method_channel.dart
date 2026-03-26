@@ -13,6 +13,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   static const EventChannel _activityChangeChannel = EventChannel('libre_location/activityChange');
   static const EventChannel _providerChangeChannel = EventChannel('libre_location/providerChange');
   static const EventChannel _heartbeatChannel = EventChannel('libre_location/heartbeat');
+  static const EventChannel _powerSaveChannel = EventChannel('libre_location/powerSaveChange');
 
   Stream<Position>? _positionStream;
   Stream<GeofenceEvent>? _geofenceStream;
@@ -20,6 +21,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<ActivityEvent>? _activityChangeStream;
   Stream<ProviderEvent>? _providerChangeStream;
   Stream<HeartbeatEvent>? _heartbeatStream;
+  Stream<bool>? _powerSaveStream;
 
   @override
   Future<void> startTracking(LocationConfig config) async {
@@ -179,6 +181,49 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   @override
   Future<bool> openPowerManagerSettings() async {
     final result = await _channel.invokeMethod<bool>('openPowerManagerSettings');
+    return result ?? false;
+  }
+
+  @override
+  Stream<bool> get powerSaveChangeStream {
+    _powerSaveStream ??= _powerSaveChannel
+        .receiveBroadcastStream()
+        .map((event) => event as bool);
+    return _powerSaveStream!;
+  }
+
+  @override
+  Future<int> requestTemporaryFullAccuracy({required String purposeKey}) async {
+    final result = await _channel.invokeMethod<int>(
+      'requestTemporaryFullAccuracy',
+      {'purposeKey': purposeKey},
+    );
+    return result ?? 1; // default to reducedAccuracy
+  }
+
+  @override
+  Future<void> changePace(bool isMoving) async {
+    await _channel.invokeMethod('changePace', {'isMoving': isMoving});
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getLog() async {
+    final result = await _channel.invokeListMethod<Map>('getLog');
+    return result
+            ?.map((m) => Map<String, dynamic>.from(m))
+            .toList() ??
+        [];
+  }
+
+  @override
+  Future<bool> checkNotificationPermission() async {
+    final result = await _channel.invokeMethod<bool>('checkNotificationPermission');
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> requestNotificationPermission() async {
+    final result = await _channel.invokeMethod<bool>('requestNotificationPermission');
     return result ?? false;
   }
 }

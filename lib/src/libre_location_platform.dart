@@ -116,4 +116,42 @@ abstract class LibreLocationPlatform extends PlatformInterface {
   Future<bool> openPowerManagerSettings() {
     throw UnimplementedError('openPowerManagerSettings() has not been implemented.');
   }
+
+  /// Stream that emits `true` when power save mode is enabled, `false` when disabled.
+  Stream<bool> get powerSaveChangeStream {
+    throw UnimplementedError('powerSaveChangeStream has not been implemented.');
+  }
+
+  /// Requests temporary full accuracy on iOS 14+ when the user has granted
+  /// "approximate location" permission. [purposeKey] must match a key in
+  /// `NSLocationTemporaryUsageDescriptionDictionary` in Info.plist.
+  ///
+  /// Returns the resulting accuracy authorization:
+  /// 0 = fullAccuracy, 1 = reducedAccuracy.
+  Future<int> requestTemporaryFullAccuracy({required String purposeKey}) {
+    throw UnimplementedError('requestTemporaryFullAccuracy() has not been implemented.');
+  }
+
+  /// Manually overrides the motion state.
+  /// When [isMoving] is `true`, tracking switches to active/moving mode.
+  /// When `false`, tracking switches to stationary mode.
+  Future<void> changePace(bool isMoving) {
+    throw UnimplementedError('changePace() has not been implemented.');
+  }
+
+  /// Returns recent log entries from the in-memory log buffer.
+  Future<List<Map<String, dynamic>>> getLog() {
+    throw UnimplementedError('getLog() has not been implemented.');
+  }
+
+  /// Checks whether the POST_NOTIFICATIONS permission is granted (Android 13+).
+  Future<bool> checkNotificationPermission() {
+    throw UnimplementedError('checkNotificationPermission() has not been implemented.');
+  }
+
+  /// Requests the POST_NOTIFICATIONS runtime permission (Android 13+).
+  /// Returns `true` if granted.
+  Future<bool> requestNotificationPermission() {
+    throw UnimplementedError('requestNotificationPermission() has not been implemented.');
+  }
 }

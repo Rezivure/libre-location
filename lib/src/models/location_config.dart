@@ -38,6 +38,11 @@ class LocationConfig {
   final PermissionRationale? backgroundPermissionRationale;
   final LocationAuthorizationRequest locationAuthorizationRequest;
 
+  // GPS filtering / smoothing
+  final bool locationFilterEnabled;
+  final double maxAccuracy;
+  final double maxSpeed;
+
   const LocationConfig({
     this.accuracy = Accuracy.high,
     this.intervalMs = 60000,
@@ -68,6 +73,9 @@ class LocationConfig {
     this.notification,
     this.backgroundPermissionRationale,
     this.locationAuthorizationRequest = LocationAuthorizationRequest.always,
+    this.locationFilterEnabled = true,
+    this.maxAccuracy = 100.0,
+    this.maxSpeed = 83.33,
   });
 
   Map<String, dynamic> toMap() {
@@ -109,6 +117,9 @@ class LocationConfig {
       if (backgroundPermissionRationale != null)
         'backgroundPermissionRationale': backgroundPermissionRationale!.toMap(),
       'locationAuthorizationRequest': locationAuthorizationRequest.index,
+      'locationFilterEnabled': locationFilterEnabled,
+      'maxAccuracy': maxAccuracy,
+      'maxSpeed': maxSpeed,
     };
   }
 
@@ -147,6 +158,9 @@ class LocationConfig {
           ? PermissionRationale.fromMap(Map<String, dynamic>.from(map['backgroundPermissionRationale'] as Map))
           : null,
       locationAuthorizationRequest: LocationAuthorizationRequest.values[map['locationAuthorizationRequest'] as int? ?? 0],
+      locationFilterEnabled: map['locationFilterEnabled'] as bool? ?? true,
+      maxAccuracy: (map['maxAccuracy'] as num?)?.toDouble() ?? 100.0,
+      maxSpeed: (map['maxSpeed'] as num?)?.toDouble() ?? 83.33,
     );
   }
 
@@ -180,6 +194,9 @@ class LocationConfig {
     NotificationConfig? notification,
     PermissionRationale? backgroundPermissionRationale,
     LocationAuthorizationRequest? locationAuthorizationRequest,
+    bool? locationFilterEnabled,
+    double? maxAccuracy,
+    double? maxSpeed,
   }) {
     return LocationConfig(
       accuracy: accuracy ?? this.accuracy,
@@ -211,6 +228,9 @@ class LocationConfig {
       notification: notification ?? this.notification,
       backgroundPermissionRationale: backgroundPermissionRationale ?? this.backgroundPermissionRationale,
       locationAuthorizationRequest: locationAuthorizationRequest ?? this.locationAuthorizationRequest,
+      locationFilterEnabled: locationFilterEnabled ?? this.locationFilterEnabled,
+      maxAccuracy: maxAccuracy ?? this.maxAccuracy,
+      maxSpeed: maxSpeed ?? this.maxSpeed,
     );
   }
 
