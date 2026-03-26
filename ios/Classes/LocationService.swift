@@ -115,6 +115,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private var lastMovementDate = Date()
     private var stopDetectionTimer: Timer?
 
+    // Kalman filter
+    private var kalmanFilter = KalmanFilter()
+
     // State persistence
     private static let isTrackingKey = "libre_location_is_tracking"
 
@@ -132,6 +135,19 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         locationManager.delegate = self
         // Enable battery monitoring so we can include level/charging in every position
         UIDevice.current.isBatteryMonitoringEnabled = true
+    }
+
+    // MARK: - Database Flush
+
+    /// Flush undelivered locations from the database. Returns them and marks as delivered.
+    func flushUndeliveredLocations() -> [[String: Any]] {
+        let undelivered = LocationDatabase.shared.getUndelivered()
+        if !undelivered.isEmpty {
+            let ids = undelivered.compactMap { $0["_dbId"] as? Int64 }
+            LocationDatabase.shared.markDelivered(ids)
+            LibreLocationPlugin.log("Flushed \(undelivered.count) undelivered locations from DB")
+        }
+        return undelivered
     }
 
     // MARK: - App Termination Recovery
@@ -154,6 +170,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         mode: Int,
         enableMotionDetection: Bool = true
     ) {
+        kalmanFilter.reset()
         config.accuracy = accuracy
         config.intervalMs = intervalMs
         config.distanceFilter = distanceFilter
@@ -386,8 +403,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             }
         }
 
-        let data = locationToMap(location)
-        lastEmittedLocation = location
+        // Apply Kalman filter for GPS smoothing
+        let smoothed = applyKalmanFilter(location)
+        let data = locationToMap(smoothed)
+        lastEmittedLocation = smoothed
 
         // Flush any pending motion change now that we have a position
         flushPendingMotionChange()
@@ -404,8 +423,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         // Regular tracking emission
         onPosition?(data)
 
-        // Buffer for persistence
-        LocationBuffer.append(data)
+        // Persist to SQLite database
+        LocationDatabase.shared.insertLocation(data)
 
         // Update movement timestamp if actually moving
         if location.speed > 0.5 {
@@ -748,6 +767,44 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Helpers
 
+    /// Apply Kalman filter to a location if filtering is enabled.
+    /// Returns a new CLLocation with smoothed coordinates, or the original if filtering is off.
+    private func applyKalmanFilter(_ location: CLLocation) -> CLLocation {
+        guard config.locationFilterEnabled else { return location }
+
+        // Reset if accuracy changed dramatically (>5x)
+        if let lastAcc = kalmanFilter.lastAccuracy,
+           location.horizontalAccuracy > 0,
+           lastAcc > 0 {
+            let ratio = location.horizontalAccuracy / lastAcc
+            if ratio > 5.0 || ratio < 0.2 {
+                kalmanFilter.reset()
+            }
+        }
+
+        kalmanFilter.process(
+            lat: location.coordinate.latitude,
+            lng: location.coordinate.longitude,
+            accuracy: location.horizontalAccuracy,
+            timestamp: location.timestamp.timeIntervalSince1970
+        )
+
+        guard let filteredLat = kalmanFilter.lat,
+              let filteredLng = kalmanFilter.lng else {
+            return location
+        }
+
+        return CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: filteredLat, longitude: filteredLng),
+            altitude: location.altitude,
+            horizontalAccuracy: location.horizontalAccuracy,
+            verticalAccuracy: location.verticalAccuracy,
+            course: location.course,
+            speed: location.speed,
+            timestamp: location.timestamp
+        )
+    }
+
     func locationToMap(_ location: CLLocation) -> [String: Any] {
         var map: [String: Any] = [
             "latitude": location.coordinate.latitude,
@@ -779,5 +836,61 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
 
         return map
+    }
+}
+
+// MARK: - Kalman Filter for GPS Smoothing
+
+/// Simple 1D Kalman filter applied independently to latitude and longitude.
+/// Smooths GPS jitter while preserving real movement.
+final class KalmanFilter {
+    private(set) var lat: Double?
+    private(set) var lng: Double?
+    private var variance: Double = 0
+    private var lastTimestamp: TimeInterval = 0
+    private(set) var lastAccuracy: Double?
+
+    /// Process noise in m²/s — higher = trusts new readings more.
+    /// 3.0 is reasonable for walking; driving can use higher.
+    private let processNoise: Double = 3.0
+
+    func process(lat: Double, lng: Double, accuracy: Double, timestamp: TimeInterval) {
+        guard accuracy > 0 else { return }
+
+        if self.lat == nil {
+            // First reading
+            self.lat = lat
+            self.lng = lng
+            self.variance = accuracy * accuracy
+            self.lastTimestamp = timestamp
+            self.lastAccuracy = accuracy
+            return
+        }
+
+        // Add process noise based on time elapsed
+        let timeDelta = max(0, timestamp - lastTimestamp)
+        variance += timeDelta * processNoise
+
+        // Kalman gain
+        let measurementVariance = accuracy * accuracy
+        let K = variance / (variance + measurementVariance)
+
+        // Update estimates
+        self.lat = self.lat! + K * (lat - self.lat!)
+        self.lng = self.lng! + K * (lng - self.lng!)
+
+        // Update variance
+        self.variance = (1.0 - K) * variance
+
+        self.lastTimestamp = timestamp
+        self.lastAccuracy = accuracy
+    }
+
+    func reset() {
+        lat = nil
+        lng = nil
+        variance = 0
+        lastTimestamp = 0
+        lastAccuracy = nil
     }
 }

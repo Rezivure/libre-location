@@ -144,9 +144,15 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         // Restore tracking if app was relaunched by the OS
         instance.locationService?.restoreTrackingIfNeeded()
 
-        // Flush any buffered locations from before termination
-        let buffered = LocationBuffer.flush()
+        // Flush any buffered locations from SQLite database
+        let buffered = instance.locationService?.flushUndeliveredLocations() ?? []
         for loc in buffered {
+            instance.positionStreamHandler?.send(loc)
+        }
+
+        // Also flush legacy UserDefaults buffer (migration)
+        let legacyBuffered = LocationBuffer.flush()
+        for loc in legacyBuffered {
             instance.positionStreamHandler?.send(loc)
         }
 
@@ -412,7 +418,7 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             result(locationService?.isMoving ?? false)
 
         case "getBufferedLocations":
-            result(LocationBuffer.flush())
+            result(locationService?.flushUndeliveredLocations() ?? [])
 
         // ── Android-only methods (no-op on iOS) ──────────────────
 
@@ -463,6 +469,15 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             locationService?.restoreTrackingIfNeeded()
         }
         return true
+    }
+
+    public func applicationWillEnterForeground(_ application: UIApplication) {
+        // Flush undelivered locations from DB when app returns to foreground
+        if let undelivered = locationService?.flushUndeliveredLocations() {
+            for loc in undelivered {
+                positionStreamHandler?.send(loc)
+            }
+        }
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {

@@ -16,6 +16,7 @@ CoreLocation on iOS, AOSP LocationManager on Android. No proprietary SDKs.
   s.swift_version    = '5.0'
 
   s.frameworks       = 'CoreLocation', 'CoreMotion'
+  s.library          = 'sqlite3'
 
   s.test_spec 'Tests' do |test_spec|
     test_spec.source_files = 'Tests/**/*'
