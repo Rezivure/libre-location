@@ -1,17 +1,17 @@
-/// Migration example: Grid's location_manager.dart with libre_location presets.
-///
-/// BEFORE (flutter_background_geolocation): ~370 lines
-///   - 4 different config contexts (foreground, background, battery saver, activity-based)
-///   - 15+ hardcoded magic numbers per config
-///   - Manual lifecycle listener for foreground/background switching
-///   - Manual activity-based config adjustment with switch statements
-///   - Manual throttling logic
-///
-/// AFTER (libre_location presets): ~100 lines
-///   - Plugin handles ALL adaptation internally
-///   - No lifecycle management needed
-///   - No activity-based config switching needed
-///   - No magic numbers anywhere
+// Migration example: Grid's location_manager.dart with libre_location presets.
+//
+// BEFORE (flutter_background_geolocation): ~370 lines
+//   - 4 different config contexts (foreground, background, battery saver, activity-based)
+//   - 15+ hardcoded magic numbers per config
+//   - Manual lifecycle listener for foreground/background switching
+//   - Manual activity-based config adjustment with switch statements
+//   - Manual throttling logic
+//
+// AFTER (libre_location presets): ~100 lines
+//   - Plugin handles ALL adaptation internally
+//   - No lifecycle management needed
+//   - No activity-based config switching needed
+//   - No magic numbers anywhere
 
 import 'dart:async';
 import 'package:flutter/material.dart';

@@ -9,15 +9,10 @@ import 'enums/log_level.dart';
 class LibreLocationLogger {
   LibreLocationLogger._();
 
-  static LogLevel _level = LogLevel.off;
-  static final int _maxEntries = 500;
+  /// The current log level. Messages below this level are discarded.
+  static LogLevel logLevel = LogLevel.off;
+  static const int _maxEntries = 500;
   static final Queue<LogEntry> _entries = Queue<LogEntry>();
-
-  /// Sets the current log level. Messages below this level are discarded.
-  static set logLevel(LogLevel level) => _level = level;
-
-  /// Returns the current log level.
-  static LogLevel get logLevel => _level;
 
   static void verbose(String message) => _log(LogLevel.verbose, message);
   static void debug(String message) => _log(LogLevel.debug, message);
@@ -26,10 +21,10 @@ class LibreLocationLogger {
   static void error(String message) => _log(LogLevel.error, message);
 
   static void _log(LogLevel level, String message) {
-    if (_level == LogLevel.off) return;
+    if (logLevel == LogLevel.off) return;
     // LogLevel enum order: off(0), error(1), warning(2), info(3), debug(4), verbose(5)
     // A message is logged if its level index <= current level index
-    if (level.index > _level.index) return;
+    if (level.index > logLevel.index) return;
 
     final entry = LogEntry(
       timestamp: DateTime.now(),
