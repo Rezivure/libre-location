@@ -381,6 +381,41 @@ void main() {
     test('default values are correct', () {
       const config = LocationConfig();
 
+      expect(config.stopOnTerminate, false);
+      expect(config.startOnBoot, true);
+      expect(config.enableHeadless, true);
+      expect(config.debug, false);
+      expect(config.notification, isNull);
+      expect(config.backgroundPermissionRationale, isNull);
+    });
+
+    test('copyWith replaces fields', () {
+      const config = LocationConfig();
+      final modified = config.copyWith(
+        debug: true,
+        stopOnTerminate: true,
+      );
+
+      expect(modified.debug, true);
+      expect(modified.stopOnTerminate, true);
+      // unchanged
+      expect(modified.startOnBoot, true);
+      expect(modified.enableHeadless, true);
+    });
+
+    test('toString includes key fields', () {
+      const config = LocationConfig(debug: true);
+      final str = config.toString();
+      expect(str, contains('debug: true'));
+    });
+  });
+
+  // ── NativeConfig model tests ──
+
+  group('NativeConfig', () {
+    test('default values are correct', () {
+      const config = NativeConfig();
+
       expect(config.accuracy, Accuracy.high);
       expect(config.intervalMs, 60000);
       expect(config.distanceFilter, 10.0);
@@ -389,22 +424,22 @@ void main() {
       expect(config.stopOnTerminate, true);
       expect(config.startOnBoot, false);
       expect(config.enableHeadless, false);
-      expect(config.stopTimeout, 5);
-      expect(config.stopDetectionDelay, 0);
-      expect(config.stationaryRadius, 25.0);
-      expect(config.disableStopDetection, false);
-      expect(config.disableMotionActivityUpdates, false);
-      expect(config.motionTriggerDelay, 0);
-      expect(config.useSignificantChangesOnly, false);
-      expect(config.isMoving, false);
-      expect(config.activityRecognitionInterval, 10000);
-      expect(config.minimumActivityRecognitionConfidence, 75);
+      expect(config.stillnessTimeoutMin, 5);
+      expect(config.stillnessDelayMs, 0);
+      expect(config.stillnessRadiusMeters, 25.0);
+      expect(config.skipStillnessDetection, false);
+      expect(config.skipActivityUpdates, false);
+      expect(config.motionConfirmDelayMs, 0);
+      expect(config.significantChangesOnly, false);
+      expect(config.initiallyMoving, false);
+      expect(config.activityCheckIntervalMs, 10000);
+      expect(config.activityConfidenceThreshold, 75);
       expect(config.heartbeatInterval, 0);
       expect(config.activityType, ActivityType.other);
       expect(config.pausesLocationUpdatesAutomatically, false);
-      expect(config.preventSuspend, false);
-      expect(config.maxDaysToPersist, 1);
-      expect(config.maxRecordsToPersist, -1);
+      expect(config.keepAwake, false);
+      expect(config.retentionDays, 1);
+      expect(config.retentionMaxRecords, -1);
       expect(config.debug, false);
       expect(config.logLevel, LogLevel.off);
       expect(config.notification, isNull);
@@ -413,105 +448,53 @@ void main() {
           LocationAuthorizationRequest.always);
     });
 
-    test('toMap/fromMap round-trips with all fields', () {
-      final config = LocationConfig(
-        accuracy: Accuracy.navigation,
-        intervalMs: 5000,
-        distanceFilter: 50.0,
-        mode: TrackingMode.active,
-        enableMotionDetection: false,
-        stopOnTerminate: false,
-        startOnBoot: true,
-        enableHeadless: true,
-        stopTimeout: 10,
-        stopDetectionDelay: 3,
-        stationaryRadius: 50.0,
-        disableStopDetection: true,
-        disableMotionActivityUpdates: true,
-        motionTriggerDelay: 500,
-        useSignificantChangesOnly: true,
-        isMoving: true,
-        activityRecognitionInterval: 5000,
-        minimumActivityRecognitionConfidence: 50,
-        heartbeatInterval: 120,
-        activityType: ActivityType.automotive,
-        pausesLocationUpdatesAutomatically: true,
-        preventSuspend: true,
-        maxDaysToPersist: 7,
-        maxRecordsToPersist: 1000,
-        debug: true,
-        logLevel: LogLevel.verbose,
-        notification: const NotificationConfig(
-          title: 'Test',
-          text: 'Testing',
-          sticky: true,
-          priority: NotificationPriority.high,
-        ),
-        backgroundPermissionRationale: const PermissionRationale(
-          title: 'Background Location',
-          message: 'Needed for tracking',
-        ),
-        locationAuthorizationRequest: LocationAuthorizationRequest.whenInUse,
+    test('toMap produces correct keys for native layer', () {
+      const config = NativeConfig(
+        stillnessDelayMs: 3,
+        skipStillnessDetection: true,
+        skipActivityUpdates: true,
+        motionConfirmDelayMs: 500,
+        significantChangesOnly: true,
+        initiallyMoving: true,
+        activityCheckIntervalMs: 5000,
+        activityConfidenceThreshold: 50,
+        keepAwake: true,
+        retentionDays: 7,
+        retentionMaxRecords: 1000,
       );
 
       final map = config.toMap();
-      final restored = LocationConfig.fromMap(map);
 
-      expect(restored.accuracy, Accuracy.navigation);
-      expect(restored.intervalMs, 5000);
-      expect(restored.distanceFilter, 50.0);
-      expect(restored.mode, TrackingMode.active);
-      expect(restored.enableMotionDetection, false);
-      expect(restored.stopOnTerminate, false);
-      expect(restored.startOnBoot, true);
-      expect(restored.enableHeadless, true);
-      expect(restored.stopTimeout, 10);
-      expect(restored.stopDetectionDelay, 3);
-      expect(restored.stationaryRadius, 50.0);
-      expect(restored.disableStopDetection, true);
-      expect(restored.disableMotionActivityUpdates, true);
-      expect(restored.motionTriggerDelay, 500);
-      expect(restored.useSignificantChangesOnly, true);
-      expect(restored.isMoving, true);
-      expect(restored.activityRecognitionInterval, 5000);
-      expect(restored.minimumActivityRecognitionConfidence, 50);
-      expect(restored.heartbeatInterval, 120);
-      expect(restored.activityType, ActivityType.automotive);
-      expect(restored.pausesLocationUpdatesAutomatically, true);
-      expect(restored.preventSuspend, true);
-      expect(restored.maxDaysToPersist, 7);
-      expect(restored.maxRecordsToPersist, 1000);
-      expect(restored.debug, true);
-      expect(restored.logLevel, LogLevel.verbose);
-      expect(restored.notification?.title, 'Test');
-      expect(restored.notification?.priority, NotificationPriority.high);
-      expect(restored.backgroundPermissionRationale?.title, 'Background Location');
-      expect(restored.locationAuthorizationRequest,
-          LocationAuthorizationRequest.whenInUse);
+      expect(map['stillnessDelayMs'], 3);
+      expect(map['skipStillnessDetection'], true);
+      expect(map['skipActivityUpdates'], true);
+      expect(map['motionConfirmDelayMs'], 500);
+      expect(map['significantChangesOnly'], true);
+      expect(map['initiallyMoving'], true);
+      expect(map['activityCheckIntervalMs'], 5000);
+      expect(map['activityConfidenceThreshold'], 50);
+      expect(map['keepAwake'], true);
+      expect(map['retentionDays'], 7);
+      expect(map['retentionMaxRecords'], 1000);
+      // Verify no old transistorsoft keys are emitted
+      expect(map.containsKey('stopDetectionDelay'), false);
+      expect(map.containsKey('disableStopDetection'), false);
+      expect(map.containsKey('preventSuspend'), false);
+      expect(map.containsKey('maxDaysToPersist'), false);
     });
 
     test('copyWith replaces fields', () {
-      const config = LocationConfig();
+      const config = NativeConfig();
       final modified = config.copyWith(
-        accuracy: Accuracy.low,
         debug: true,
         heartbeatInterval: 60,
       );
 
-      expect(modified.accuracy, Accuracy.low);
       expect(modified.debug, true);
       expect(modified.heartbeatInterval, 60);
       // unchanged
       expect(modified.distanceFilter, 10.0);
       expect(modified.stopOnTerminate, true);
-    });
-
-    test('fromMap handles empty map with defaults', () {
-      final config = LocationConfig.fromMap({});
-
-      expect(config.accuracy, Accuracy.high);
-      expect(config.distanceFilter, 10.0);
-      expect(config.notification, isNull);
     });
   });
 
@@ -687,7 +670,7 @@ void main() {
     });
 
     test('startTracking sends config', () async {
-      const config = LocationConfig(
+      const config = NativeConfig(
         accuracy: Accuracy.high,
         distanceFilter: 20.0,
         debug: true,
@@ -728,7 +711,7 @@ void main() {
     });
 
     test('setConfig sends config', () async {
-      const config = LocationConfig(heartbeatInterval: 60);
+      const config = NativeConfig(heartbeatInterval: 60);
       await platform.setConfig(config);
 
       expect(log.first.method, 'setConfig');

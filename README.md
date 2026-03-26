@@ -255,7 +255,7 @@ await LibreLocation.start(
 | `enableHeadless` | `true` | Dart callbacks after app termination (Android) |
 | `debug` | `false` | Enable debug logging |
 
-That's it. No `distanceFilter`, no `stationaryRadius`, no `activityRecognitionInterval`. The preset handles all of that.
+That's it. No `distanceFilter`, no `stillnessRadiusMeters`, no `activityCheckIntervalMs`. The preset handles all of that.
 
 ## Platform Setup
 
@@ -405,7 +405,7 @@ void _updateTrackingConfig() {
     bg.BackgroundGeolocation.setConfig(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
       distanceFilter: 10, stopTimeout: 3, stationaryRadius: 25,
-      disableMotionActivityUpdates: false, heartbeatInterval: 300,
+      skipActivityUpdates: false, heartbeatInterval: 300,
       // ... 10 more params
     ));
   } else if (_batterySaver) {

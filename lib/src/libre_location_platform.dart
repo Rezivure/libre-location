@@ -167,7 +167,7 @@ abstract class LibreLocationPlatform extends PlatformInterface {
   }
 
   /// Manually overrides the motion state.
-  /// When [isMoving] is `true`, tracking switches to active/moving mode.
+  /// When [initiallyMoving] is `true`, tracking switches to active/moving mode.
   /// When `false`, tracking switches to stationary mode.
   Future<void> setMoving(bool isMoving) {
     throw UnimplementedError('setMoving() has not been implemented.');

@@ -279,7 +279,7 @@ class LibreLocation {
   // Utilities
   // ───────────────────────────────────────────
 
-  static Future<void> changePace(bool isMoving) {
+  static Future<void> setMoving(bool isMoving) {
     return LibreLocationPlatform.instance.setMoving(isMoving);
   }
 

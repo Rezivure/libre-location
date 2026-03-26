@@ -186,6 +186,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     func stopTracking() {
+        guard isTracking else { return }
         isTracking = false
         UserDefaults.standard.set(false, forKey: Self.isTrackingKey)
         LocationServiceConfig.clear()

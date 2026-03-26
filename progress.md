@@ -78,6 +78,63 @@ Struct fields, map key readers in `setConfig()`, and all internal references upd
 - **Stream architecture** — while having similar streams to any location plugin, our channel names are `libre_location/*` and the implementation is original
 - **README** — fully original, documents our preset API
 
+---
+
+## Reconciliation: Config Refactor vs Audit Conflict (2026-03-26)
+
+Two agents ran in parallel and stepped on each other. The config refactor (commit 62884c8) reintroduced old transistorsoft field names in `native_config.dart`, `tracking_preset.dart`, `libre_location.dart`, and tests — overwriting the audit's renames.
+
+### What was fixed
+- Re-applied all field renames in Dart: `NativeConfig`, `TrackingPreset`, method channel layer
+- Fixed `changePace` → `setMoving` in `libre_location.dart`
+- Fixed `isMoving` → `initiallyMoving` only in NativeConfig context (Position.isMoving kept)
+- Rewrote `LocationConfig` tests (now 6-field class, not 35-field)
+- Added `NativeConfig` tests with map key verification (no old transistorsoft keys)
+- Rewrote integration tests to use `LibreLocation.start()` API
+- Fixed Kotlin test (`MotionDetectorTest`) field names
+- Fixed Swift test (`LocationServiceTests`) field names
+- Verified map key consistency: Dart `toMap()` ↔ Kotlin `fromMap()` ↔ Swift config reads — all match
+- README references updated
+
+### Map key verification (Dart → Kotlin → Swift)
+All three layers use identical keys: `stillnessDelayMs`, `skipStillnessDetection`, `skipActivityUpdates`, `motionConfirmDelayMs`, `significantChangesOnly`, `keepAwake`, `retentionDays`, `retentionMaxRecords`, `activityCheckIntervalMs`, `activityConfidenceThreshold`, `stillnessTimeoutMin`, `stillnessRadiusMeters`, `initiallyMoving`, `pausesLocationUpdatesAutomatically`.
+
+---
+
+## Story 3: Edge Case Handling (2026-03-26)
+
+### Findings
+- **GPS off mid-tracking**: ✅ Both platforms emit provider change events. Android has `providerCheckRunnable` polling every 10s + `onProviderDisabled` listener. iOS has `locationManagerDidChangeAuthorization`.
+- **Permission revoked mid-tracking**: ✅ Android emits via `permissionChangeStreamHandler`. iOS emits via `locationManagerDidChangeAuthorization` → `onPermissionChange`.
+- **App killed**: ✅ Android: `START_STICKY` service + `BootReceiver` + `WatchdogAlarmReceiver` + config persistence. iOS: `significantLocationChanges` for relaunch + config persistence in UserDefaults.
+- **Low memory**: Android: `START_STICKY` restarts service. iOS: `significantLocationChanges` keeps monitoring.
+- **Airplane mode**: Handled same as GPS off — provider change events emitted.
+- **Rapid start/stop**: ✅ `startTracking` removes existing listeners before adding new ones (no duplicates).
+- **Double-start**: ✅ Both platforms handle gracefully — existing tracking cleaned up first.
+- **Methods before start**: ✅ `getCurrentPosition` works independently. `setMoving`/`stopTracking` have `isTracking` guards.
+- **Methods after stop**: ✅ Added guard on `stopTracking` to no-op if not tracking. `setConfig` now only applies to motion detector when tracking.
+
+### Guards added
+- Android `handleStopTracking`: early return if not tracking
+- Android `handleSetConfig`: motion detector update only when tracking
+- iOS `stopTracking`: `guard isTracking` added
+
+---
+
+## Story 5: Native Code Quality (2026-03-26)
+
+### Thread safety
+- **Android**: All stream emissions via `mainHandler.post` (main thread). `CopyOnWriteArrayList` for concurrent listener access. Location processing on main looper.
+- **iOS**: CLLocationManager delegate calls run on main thread by default. Timer callbacks run on main thread. `oneShotCallbacks` accessed only from main thread (safe).
+
+### Memory leaks
+- **Android**: All listeners removed in `stopTracking()` and `onDetachedFromEngine()`. `HeartbeatRunnable` removed. Wake lock released in `onDestroy()`. Power save receiver unregistered.
+- **iOS**: All timers use `[weak self]`. Timers invalidated in `stopTracking()`. No retain cycles detected.
+
+### Lifecycle handling
+- **Android**: `onDetachedFromEngine` conditionally stops tracking based on `stopOnTerminate`. Config persisted for boot recovery. `START_STICKY` ensures service restart.
+- **iOS**: Config persisted to UserDefaults. `restoreTrackingIfNeeded()` recovers after app relaunch. `significantLocationChanges` registered as fallback for termination recovery.
+
 ### Architecture assessment
 The architecture is NOT a 1:1 copy. transistorsoft uses a monolithic service with HTTP sync, SQLite for server upload queuing, and a massive Config object. Our architecture is:
 - Preset-driven (they have none)

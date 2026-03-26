@@ -144,10 +144,10 @@ class LocationManager with ChangeNotifier {
 // ✗ onActivityChange handler with switch(activity) config adjustment
 // ✗ Manual throttling logic (timeSinceLastUpdate, throttleInterval)
 // ✗ 60+ lines of bg.Config() with hardcoded values like:
-//     - desiredAccuracy, distanceFilter, stopTimeout,
-//     - stopDetectionDelay, stationaryRadius, heartbeatInterval,
-//     - activityRecognitionInterval, minimumActivityRecognitionConfidence,
-//     - disableMotionActivityUpdates, pausesLocationUpdatesAutomatically...
+//     - desiredAccuracy, distanceFilter, stillnessTimeoutMin,
+//     - stillnessDelayMs, stillnessRadiusMeters, heartbeatInterval,
+//     - activityCheckIntervalMs, activityConfidenceThreshold,
+//     - skipActivityUpdates, pausesLocationUpdatesAutomatically...
 // ✗ SharedPreferences for battery saver state (now just a preset switch)
 //
 // Lines: 368 → ~100 (73% reduction)

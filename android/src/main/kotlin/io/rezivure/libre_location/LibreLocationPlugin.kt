@@ -497,6 +497,11 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     }
 
     private fun handleStopTracking(result: Result) {
+        if (locationManagerWrapper?.isTracking != true) {
+            Log.d(TAG, "stopTracking called but not tracking — no-op")
+            result.success(null)
+            return
+        }
         locationManagerWrapper?.stopTracking()
         motionDetector?.stop()
 
@@ -562,13 +567,11 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         // Persist
         newConfig.persist(context)
 
-        // Apply to location manager
+        // Apply to location manager only if currently tracking
         if (locationManagerWrapper?.isTracking == true) {
             locationManagerWrapper?.setConfig(newConfig)
-        }
 
-        // Apply to motion detector
-        if (motionDetector != null) {
+            // Apply to motion detector only when tracking
             motionDetector?.updateConfig(newConfig)
         }
 

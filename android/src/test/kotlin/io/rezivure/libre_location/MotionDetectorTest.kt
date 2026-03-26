@@ -17,17 +17,17 @@ class MotionDetectorTest {
         // We can't instantiate MotionDetector without a real Context/SensorManager,
         // so we test the TrackingConfig values that feed into it.
         val config = TrackingConfig(
-            stopTimeout = 600_000L,
-            motionTriggerDelay = 5000L,
-            stopDetectionDelay = 10_000L,
-            disableStopDetection = true,
-            stationaryRadius = 50f,
+            stillnessTimeoutMs = 600_000L,
+            motionConfirmDelayMs = 5000L,
+            stillnessDelayMs = 10_000L,
+            skipStillnessDetection = true,
+            stillnessRadiusMeters = 50f,
         )
-        assertEquals(600_000L, config.stopTimeout)
-        assertEquals(5000L, config.motionTriggerDelay)
-        assertEquals(10_000L, config.stopDetectionDelay)
-        assertTrue(config.disableStopDetection)
-        assertEquals(50f, config.stationaryRadius)
+        assertEquals(600_000L, config.stillnessTimeoutMs)
+        assertEquals(5000L, config.motionConfirmDelayMs)
+        assertEquals(10_000L, config.stillnessDelayMs)
+        assertTrue(config.skipStillnessDetection)
+        assertEquals(50f, config.stillnessRadiusMeters)
     }
 
     @Test

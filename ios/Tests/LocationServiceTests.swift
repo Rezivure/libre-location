@@ -24,8 +24,8 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertFalse(config.pausesLocationUpdatesAutomatically)
         XCTAssertEqual(config.activityType, 0)
         XCTAssertFalse(config.stopOnTerminate)
-        XCTAssertFalse(config.preventSuspend)
-        XCTAssertFalse(config.useSignificantChangesOnly)
+        XCTAssertFalse(config.keepAwake)
+        XCTAssertFalse(config.significantChangesOnly)
         XCTAssertTrue(config.showsBackgroundLocationIndicator)
         XCTAssertTrue(config.locationFilterEnabled)
         XCTAssertEqual(config.maxAccuracy, 100.0)
@@ -38,7 +38,7 @@ final class LocationServiceConfigTests: XCTestCase {
         config.distanceFilter = 50.0
         config.stopTimeout = 10
         config.heartbeatInterval = 300
-        config.preventSuspend = true
+        config.keepAwake = true
         config.maxAccuracy = 200.0
         config.maxSpeed = 50.0
         config.save()
@@ -49,7 +49,7 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertEqual(loaded?.distanceFilter, 50.0)
         XCTAssertEqual(loaded?.stopTimeout, 10)
         XCTAssertEqual(loaded?.heartbeatInterval, 300)
-        XCTAssertTrue(loaded?.preventSuspend ?? false)
+        XCTAssertTrue(loaded?.keepAwake ?? false)
         XCTAssertEqual(loaded?.maxAccuracy, 200.0)
         XCTAssertEqual(loaded?.maxSpeed, 50.0)
     }
@@ -81,8 +81,8 @@ final class LocationServiceConfigTests: XCTestCase {
         config.pausesLocationUpdatesAutomatically = true
         config.activityType = 2
         config.stopOnTerminate = true
-        config.preventSuspend = true
-        config.useSignificantChangesOnly = true
+        config.keepAwake = true
+        config.significantChangesOnly = true
         config.showsBackgroundLocationIndicator = false
         config.locationFilterEnabled = false
         config.maxAccuracy = 500.0
@@ -101,8 +101,8 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertTrue(loaded.pausesLocationUpdatesAutomatically)
         XCTAssertEqual(loaded.activityType, 2)
         XCTAssertTrue(loaded.stopOnTerminate)
-        XCTAssertTrue(loaded.preventSuspend)
-        XCTAssertTrue(loaded.useSignificantChangesOnly)
+        XCTAssertTrue(loaded.keepAwake)
+        XCTAssertTrue(loaded.significantChangesOnly)
         XCTAssertFalse(loaded.showsBackgroundLocationIndicator)
         XCTAssertFalse(loaded.locationFilterEnabled)
         XCTAssertEqual(loaded.maxAccuracy, 500.0)

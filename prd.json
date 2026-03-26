@@ -1,0 +1,31 @@
+{
+  "stories": [
+    {
+      "id": 1,
+      "title": "Core location tracking with presets",
+      "passes": true
+    },
+    {
+      "id": 2,
+      "title": "Code originality audit — rename transistorsoft-copied names",
+      "passes": true
+    },
+    {
+      "id": 3,
+      "title": "Edge case handling — GPS off, permission revoked, app killed, rapid start/stop, double-start",
+      "passes": true,
+      "notes": "Guards added for double-start, stop-when-not-tracking, setConfig-when-not-tracking. GPS off/permission revoked handled via provider change listeners. App killed handled via START_STICKY + significantLocationChanges + config persistence."
+    },
+    {
+      "id": 4,
+      "title": "Config refactor — simplify LocationConfig to 6 fields",
+      "passes": true
+    },
+    {
+      "id": 5,
+      "title": "Native code quality — thread safety, memory leaks, lifecycle handling",
+      "passes": true,
+      "notes": "Thread safety: mainHandler.post for all Android stream emissions, CopyOnWriteArrayList for listeners. iOS delegates run on main thread. Memory: all timers use [weak self] on iOS, listeners removed in stopTracking/onDetachedFromEngine on Android. Wake lock properly released in onDestroy."
+    }
+  ]
+}

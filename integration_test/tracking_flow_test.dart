@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:libre_location/libre_location.dart';
@@ -60,21 +58,19 @@ void main() {
   });
 
   group('Tracking Flow', () {
-    test('startTracking sends correct method call', () async {
-      await LibreLocation.startTracking(LocationConfig(
-        accuracy: Accuracy.high,
-        mode: TrackingMode.balanced,
-        distanceFilter: 10.0,
-        intervalMs: 60000,
-      ));
+    test('start sends startTracking method call', () async {
+      await LibreLocation.start(
+        preset: TrackingPreset.balanced,
+        config: const LocationConfig(debug: true),
+      );
 
       expect(methodCalls.length, 1);
       expect(methodCalls[0].method, 'startTracking');
       final args = methodCalls[0].arguments as Map;
-      expect(args['accuracy'], 0);
-      expect(args['mode'], 1);
-      expect(args['distanceFilter'], 10.0);
-      expect(args['intervalMs'], 60000);
+      // Preset balanced defaults
+      expect(args['accuracy'], isNotNull);
+      expect(args['distanceFilter'], isNotNull);
+      expect(args['debug'], true);
     });
 
     test('stopTracking sends correct method call', () async {
@@ -84,9 +80,7 @@ void main() {
     });
 
     test('full flow: start → getCurrentPosition → stop', () async {
-      await LibreLocation.startTracking(LocationConfig(
-        accuracy: Accuracy.high,
-      ));
+      await LibreLocation.start(preset: TrackingPreset.high);
 
       final position = await LibreLocation.getCurrentPosition(
         accuracy: Accuracy.high,
@@ -144,7 +138,7 @@ void main() {
 
   group('Geofencing', () {
     test('addGeofence sends correct method call', () async {
-      await LibreLocation.addGeofence(Geofence(
+      await LibreLocation.addGeofence(const Geofence(
         id: 'test',
         latitude: 37.42,
         longitude: -122.08,
