@@ -292,7 +292,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 }
                 // Emit motion change event
                 val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                    ?: mutableMapOf(
+                    ?: mutableMapOf<String, Any?>(
                         "latitude" to 0.0,
                         "longitude" to 0.0,
                         "altitude" to 0.0,
@@ -407,7 +407,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                         }
                         // Emit motion change as Position map (Dart motionChangeStream is Stream<Position>)
                         val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                            ?: mutableMapOf(
+                            ?: mutableMapOf<String, Any?>(
                                 "latitude" to 0.0,
                                 "longitude" to 0.0,
                                 "altitude" to 0.0,

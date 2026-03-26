@@ -378,7 +378,8 @@ class MotionDetector(private val context: Context) {
         }
 
         // Pick the winner
-        val (type, _) = votes.maxByOrNull { it.value } ?: ("unknown" to 0)
+        val winner = votes.maxByOrNull { it.value }
+        val type = winner?.key ?: "unknown"
         val totalWeight = votes.values.sum().toDouble()
         val winnerWeight = votes[type] ?: 0
         val confidence = if (totalWeight > 0) ((winnerWeight / totalWeight) * 100).toInt().coerceIn(0, 100) else 50

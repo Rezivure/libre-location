@@ -93,7 +93,7 @@ class LocationService : Service() {
         // Normal start
         notificationTitle = intent?.getStringExtra(EXTRA_NOTIFICATION_TITLE) ?: notificationTitle
         notificationBody = intent?.getStringExtra(EXTRA_NOTIFICATION_BODY) ?: notificationBody
-        notificationPriority = intent?.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority)
+        notificationPriority = intent?.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority) ?: notificationPriority
         notificationSticky = intent?.getBooleanExtra(EXTRA_NOTIFICATION_STICKY, true) ?: true
         heartbeatIntervalSec = intent?.getLongExtra(EXTRA_HEARTBEAT_INTERVAL, 0L) ?: 0L
         preventSuspend = intent?.getBooleanExtra(EXTRA_PREVENT_SUSPEND, false) ?: false

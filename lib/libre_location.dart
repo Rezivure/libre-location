@@ -20,6 +20,7 @@ export 'src/enums/activity_type.dart';
 export 'src/enums/log_level.dart';
 export 'src/enums/location_authorization.dart';
 export 'src/enums/notification_priority.dart';
+export 'src/tracking_preset.dart';
 export 'src/logger.dart';
 
 import 'src/libre_location_platform.dart';
@@ -30,18 +31,140 @@ import 'src/models/geofence_event.dart';
 import 'src/models/activity_event.dart';
 import 'src/models/provider_event.dart';
 import 'src/models/heartbeat_event.dart';
+import 'src/models/notification_config.dart';
+import 'src/models/permission_rationale.dart';
 import 'src/enums/accuracy.dart';
+import 'src/enums/log_level.dart';
+import 'src/tracking_preset.dart';
+import 'src/auto_adapter.dart';
 import 'src/logger.dart';
 
 /// The main entry point for the libre_location plugin.
+///
+/// ## Quick Start (Preset API)
+///
+/// ```dart
+/// // Dead simple — uses balanced preset by default
+/// await LibreLocation.start();
+///
+/// // Or pick a preset
+/// await LibreLocation.start(preset: TrackingPreset.high);
+///
+/// // Listen for updates
+/// LibreLocation.onLocation.listen((pos) => print(pos));
+///
+/// // Switch preset at runtime (no stop/start needed)
+/// await LibreLocation.setPreset(TrackingPreset.low);
+///
+/// // Manual ping
+/// final pos = await LibreLocation.getCurrentPosition(samples: 3);
+/// ```
+///
+/// ## Power User API
+///
+/// ```dart
+/// // Full manual control
+/// await LibreLocation.start(config: LocationConfig(...));
+/// ```
 class LibreLocation {
+  static AutoAdapter? _adapter;
+
+  // ───────────────────────────────────────────
+  // Preset API (recommended)
+  // ───────────────────────────────────────────
+
+  /// Start tracking with a preset or custom config.
+  ///
+  /// If neither [preset] nor [config] is provided, defaults to
+  /// [TrackingPreset.balanced] with auto-adaptation enabled.
+  ///
+  /// When using a preset, the plugin automatically:
+  /// - Adjusts config when the app moves to foreground/background
+  /// - Adapts to detected activity (driving/walking/cycling/still)
+  /// - Optimizes GPS polling when stationary
+  ///
+  /// When using a custom [config], auto-adaptation is disabled.
+  static Future<void> start({
+    TrackingPreset? preset,
+    LocationConfig? config,
+    NotificationConfig? notification,
+    PermissionRationale? backgroundPermissionRationale,
+    bool stopOnTerminate = false,
+    bool startOnBoot = true,
+    bool enableHeadless = true,
+    bool debug = false,
+    LogLevel logLevel = LogLevel.off,
+  }) async {
+    // Stop any existing adapter
+    _adapter?.stop();
+    _adapter = null;
+
+    if (config != null) {
+      // Power user mode — no auto-adaptation
+      await LibreLocationPlatform.instance.startTracking(config);
+      return;
+    }
+
+    // Preset mode (default: balanced)
+    final effectivePreset = preset ?? TrackingPreset.balanced;
+    final baseConfig = PresetConfig.baseConfig(
+      effectivePreset,
+      notification: notification,
+      backgroundPermissionRationale: backgroundPermissionRationale,
+      stopOnTerminate: stopOnTerminate,
+      startOnBoot: startOnBoot,
+      enableHeadless: enableHeadless,
+      debug: debug,
+      logLevel: logLevel,
+    );
+
+    // Start native tracking with the base config
+    await LibreLocationPlatform.instance.startTracking(baseConfig);
+
+    // Start auto-adaptation
+    _adapter = AutoAdapter(effectivePreset, baseConfig);
+    _adapter!.start();
+  }
+
+  /// Switch to a different preset at runtime without stopping tracking.
+  ///
+  /// This is a no-op if tracking wasn't started with a preset.
+  static Future<void> setPreset(TrackingPreset preset) async {
+    if (_adapter == null) {
+      LibreLocationLogger.warning(
+        'setPreset() called but tracking was not started with a preset. '
+        'Starting with preset now.',
+      );
+      await start(preset: preset);
+      return;
+    }
+    await _adapter!.setPreset(preset);
+  }
+
+  /// Returns the current preset, or null if using a custom config.
+  static TrackingPreset? get currentPreset => _adapter?.preset;
+
+  // ───────────────────────────────────────────
+  // Legacy / Power User API
+  // ───────────────────────────────────────────
+
+  /// Start tracking with a full [LocationConfig].
+  ///
+  /// Prefer [start] with a preset for most use cases.
   static Future<void> startTracking(LocationConfig config) {
+    _adapter?.stop();
+    _adapter = null;
     return LibreLocationPlatform.instance.startTracking(config);
   }
 
-  static Future<void> stopTracking() {
+  static Future<void> stop() {
+    _adapter?.stop();
+    _adapter = null;
     return LibreLocationPlatform.instance.stopTracking();
   }
+
+  /// Alias for [stop] — backwards compatible.
+  static Future<void> stopTracking() => stop();
 
   static Future<Position> getCurrentPosition({
     Accuracy accuracy = Accuracy.high,
@@ -63,29 +186,61 @@ class LibreLocation {
     return LibreLocationPlatform.instance.setConfig(config);
   }
 
-  static Stream<Position> get positionStream {
-    return LibreLocationPlatform.instance.positionStream;
-  }
+  // ───────────────────────────────────────────
+  // Streams (aliased for cleaner API)
+  // ───────────────────────────────────────────
 
-  static Stream<Position> get motionChangeStream {
-    return LibreLocationPlatform.instance.motionChangeStream;
-  }
+  /// Stream of location updates. This is the primary stream for tracking.
+  static Stream<Position> get onLocation =>
+      LibreLocationPlatform.instance.positionStream;
 
-  static Stream<ActivityEvent> get activityChangeStream {
-    return LibreLocationPlatform.instance.activityChangeStream;
-  }
+  /// Stream of motion change events (moving ↔ stationary).
+  static Stream<Position> get onMotionChange =>
+      LibreLocationPlatform.instance.motionChangeStream;
 
-  static Stream<ProviderEvent> get providerChangeStream {
-    return LibreLocationPlatform.instance.providerChangeStream;
-  }
+  /// Stream of activity change events (still/walking/driving/etc).
+  static Stream<ActivityEvent> get onActivityChange =>
+      LibreLocationPlatform.instance.activityChangeStream;
 
-  static Stream<HeartbeatEvent> get heartbeatStream {
-    return LibreLocationPlatform.instance.heartbeatStream;
-  }
+  /// Stream of heartbeat events (periodic pings when stationary).
+  static Stream<HeartbeatEvent> get onHeartbeat =>
+      LibreLocationPlatform.instance.heartbeatStream;
+
+  /// Stream of provider change events (GPS on/off, permissions).
+  static Stream<ProviderEvent> get onProviderChange =>
+      LibreLocationPlatform.instance.providerChangeStream;
+
+  /// Stream of power save mode changes.
+  static Stream<bool> get onPowerSaveChange =>
+      LibreLocationPlatform.instance.powerSaveChangeStream;
+
+  // Legacy stream names (backwards compatible)
+  static Stream<Position> get positionStream => onLocation;
+  static Stream<Position> get motionChangeStream => onMotionChange;
+  static Stream<ActivityEvent> get activityChangeStream => onActivityChange;
+  static Stream<ProviderEvent> get providerChangeStream => onProviderChange;
+  static Stream<HeartbeatEvent> get heartbeatStream => onHeartbeat;
+  static Stream<bool> get powerSaveChangeStream => onPowerSaveChange;
+
+  // ───────────────────────────────────────────
+  // State & Permissions
+  // ───────────────────────────────────────────
 
   static Future<bool> get isTracking {
     return LibreLocationPlatform.instance.isTracking;
   }
+
+  static Future<LocationPermission> checkPermission() {
+    return LibreLocationPlatform.instance.checkPermission();
+  }
+
+  static Future<LocationPermission> requestPermission() {
+    return LibreLocationPlatform.instance.requestPermission();
+  }
+
+  // ───────────────────────────────────────────
+  // Geofencing
+  // ───────────────────────────────────────────
 
   static Future<void> addGeofence(Geofence geofence) {
     return LibreLocationPlatform.instance.addGeofence(geofence);
@@ -103,32 +258,10 @@ class LibreLocation {
     return LibreLocationPlatform.instance.geofenceStream;
   }
 
-  static Future<LocationPermission> checkPermission() {
-    return LibreLocationPlatform.instance.checkPermission();
-  }
+  // ───────────────────────────────────────────
+  // Android-specific
+  // ───────────────────────────────────────────
 
-  static Future<LocationPermission> requestPermission() {
-    return LibreLocationPlatform.instance.requestPermission();
-  }
-
-  /// Registers a headless callback dispatcher for receiving location updates
-  /// after app termination (Android only).
-  ///
-  /// Both callbacks must be top-level or static functions.
-  ///
-  /// ```dart
-  /// @pragma('vm:entry-point')
-  /// void headlessDispatcher() {
-  ///   // Initialize the headless isolate
-  /// }
-  ///
-  /// @pragma('vm:entry-point')
-  /// void onHeadlessLocation(Map<String, dynamic> data) {
-  ///   print('Headless location: $data');
-  /// }
-  ///
-  /// LibreLocation.registerHeadlessDispatcher(headlessDispatcher, onHeadlessLocation);
-  /// ```
   static Future<void> registerHeadlessDispatcher(
     void Function() dispatcherCallback,
     void Function(Map<String, dynamic>) userCallback,
@@ -139,60 +272,39 @@ class LibreLocation {
     );
   }
 
-  /// Returns `true` if the app is battery-optimized (Android only).
-  /// When optimized, the OS may aggressively kill background processes.
   static Future<bool> checkBatteryOptimization() {
     return LibreLocationPlatform.instance.checkBatteryOptimization();
   }
 
-  /// Requests the system to exempt this app from battery optimization (Android only).
-  /// Returns `true` if the settings dialog was opened.
   static Future<bool> requestBatteryOptimizationExemption() {
     return LibreLocationPlatform.instance.requestBatteryOptimizationExemption();
   }
 
-  /// Checks manufacturer-specific auto-start settings (Android only).
-  /// Returns a map with `manufacturer`, `hasAutoStartSetting`, and `isBatteryOptimized`.
   static Future<Map<String, dynamic>> isAutoStartEnabled() {
     return LibreLocationPlatform.instance.isAutoStartEnabled();
   }
 
-  /// Opens the manufacturer-specific power/battery settings page (Android only).
-  /// Returns `true` if a settings page was opened.
   static Future<bool> openPowerManagerSettings() {
     return LibreLocationPlatform.instance.openPowerManagerSettings();
   }
 
-  /// Stream that emits `true` when power save / low power mode is enabled,
-  /// `false` when disabled.
-  static Stream<bool> get powerSaveChangeStream {
-    return LibreLocationPlatform.instance.powerSaveChangeStream;
-  }
+  // ───────────────────────────────────────────
+  // iOS-specific
+  // ───────────────────────────────────────────
 
-  /// Requests temporary full accuracy authorization on iOS 14+.
-  ///
-  /// [purposeKey] must match a key defined in
-  /// `NSLocationTemporaryUsageDescriptionDictionary` in Info.plist.
-  ///
-  /// Returns 0 for fullAccuracy, 1 for reducedAccuracy.
   static Future<int> requestTemporaryFullAccuracy({required String purposeKey}) {
     return LibreLocationPlatform.instance.requestTemporaryFullAccuracy(purposeKey: purposeKey);
   }
 
-  /// Manually overrides the motion state.
-  ///
-  /// Pass `true` to force moving mode (active GPS tracking).
-  /// Pass `false` to force stationary mode (reduced power).
+  // ───────────────────────────────────────────
+  // Utilities
+  // ───────────────────────────────────────────
+
   static Future<void> changePace(bool isMoving) {
     return LibreLocationPlatform.instance.changePace(isMoving);
   }
 
-  /// Returns recent log entries from the in-memory log buffer.
-  ///
-  /// Each entry contains `timestamp`, `level`, and `message`.
-  /// Also fetches native-side logs when available.
   static Future<List<Map<String, dynamic>>> getLog() async {
-    // Combine Dart-side logs with native-side logs
     final dartLogs = LibreLocationLogger.getLog();
     try {
       final nativeLogs = await LibreLocationPlatform.instance.getLog();
@@ -202,14 +314,10 @@ class LibreLocation {
     }
   }
 
-  /// Checks whether the POST_NOTIFICATIONS permission is granted (Android 13+).
-  /// Returns `true` on iOS and pre-Android 13 devices.
   static Future<bool> checkNotificationPermission() {
     return LibreLocationPlatform.instance.checkNotificationPermission();
   }
 
-  /// Requests the POST_NOTIFICATIONS runtime permission (Android 13+).
-  /// Returns `true` if granted. No-op on iOS and pre-Android 13.
   static Future<bool> requestNotificationPermission() {
     return LibreLocationPlatform.instance.requestNotificationPermission();
   }

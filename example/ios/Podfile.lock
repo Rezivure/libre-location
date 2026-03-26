@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - libre_location (0.1.0):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - libre_location (from `.symlinks/plugins/libre_location/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  libre_location:
+    :path: ".symlinks/plugins/libre_location/ios"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  libre_location: 0aec994fb1b23087f5d64027d4ce717f318df622
+
+PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
+
+COCOAPODS: 1.16.2

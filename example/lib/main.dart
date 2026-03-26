@@ -38,6 +38,7 @@ class _LocationPageState extends State<LocationPage> {
   ActivityEvent? _currentActivity;
   int _heartbeatCount = 0;
   bool _powerSaveEnabled = false;
+  TrackingPreset _selectedPreset = TrackingPreset.balanced;
   List<Geofence> _geofences = [];
   final List<String> _logs = [];
 
@@ -59,7 +60,10 @@ class _LocationPageState extends State<LocationPage> {
     await _checkPermission();
     final tracking = await LibreLocation.isTracking;
     if (tracking) {
-      setState(() => _isTracking = true);
+      setState(() {
+        _isTracking = true;
+        _selectedPreset = LibreLocation.currentPreset ?? TrackingPreset.balanced;
+      });
       _subscribeAll();
     }
     _loadGeofences();
@@ -81,33 +85,33 @@ class _LocationPageState extends State<LocationPage> {
   }
 
   void _subscribeAll() {
-    _positionSub = LibreLocation.positionStream.listen((pos) {
+    _positionSub = LibreLocation.onLocation.listen((pos) {
       setState(() => _currentPosition = pos);
       _addLog('Position: ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)} ±${pos.accuracy.toStringAsFixed(0)}m');
     });
 
-    _motionSub = LibreLocation.motionChangeStream.listen((pos) {
+    _motionSub = LibreLocation.onMotionChange.listen((pos) {
       setState(() => _isMoving = pos.isMoving);
       _addLog('Motion: ${pos.isMoving ? "MOVING" : "STATIONARY"}');
     });
 
-    _activitySub = LibreLocation.activityChangeStream.listen((activity) {
+    _activitySub = LibreLocation.onActivityChange.listen((activity) {
       setState(() => _currentActivity = activity);
       _addLog('Activity: ${activity.activity} (${activity.confidence}%)');
     });
 
-    _heartbeatSub = LibreLocation.heartbeatStream.listen((_) {
+    _heartbeatSub = LibreLocation.onHeartbeat.listen((_) {
       setState(() => _heartbeatCount++);
       _addLog('Heartbeat #$_heartbeatCount');
     });
 
-    _powerSaveSub = LibreLocation.powerSaveChangeStream.listen((enabled) {
+    _powerSaveSub = LibreLocation.onPowerSaveChange.listen((enabled) {
       setState(() => _powerSaveEnabled = enabled);
       _addLog('Power save: ${enabled ? "ON" : "OFF"}');
     });
 
     _geofenceSub = LibreLocation.geofenceStream.listen((event) {
-      _addLog('Geofence ${event.id}: ${event.transition}');
+      _addLog('Geofence ${event.geofence.id}: ${event.transition}');
     });
   }
 
@@ -140,30 +144,39 @@ class _LocationPageState extends State<LocationPage> {
     }
   }
 
+  // ═══════════════════════════════════════════
+  //  THIS IS THE MAGIC — just one line to start
+  // ═══════════════════════════════════════════
   Future<void> _startTracking() async {
-    await LibreLocation.startTracking(const LocationConfig(
-      accuracy: Accuracy.high,
-      mode: TrackingMode.balanced,
-      intervalMs: 15000,
-      distanceFilter: 5.0,
-      enableMotionDetection: true,
-      notificationTitle: 'Libre Location Demo',
-      notificationBody: 'Tracking your location',
-    ));
+    await LibreLocation.start(
+      preset: _selectedPreset,
+      notification: const NotificationConfig(
+        title: 'Libre Location Demo',
+        text: 'Tracking your location',
+      ),
+    );
 
     _subscribeAll();
     setState(() {
       _isTracking = true;
       _heartbeatCount = 0;
     });
-    _addLog('Tracking started');
+    _addLog('Tracking started (preset: ${_selectedPreset.name})');
   }
 
   Future<void> _stopTracking() async {
-    await LibreLocation.stopTracking();
+    await LibreLocation.stop();
     _cancelAll();
     setState(() => _isTracking = false);
     _addLog('Tracking stopped');
+  }
+
+  Future<void> _switchPreset(TrackingPreset preset) async {
+    setState(() => _selectedPreset = preset);
+    if (_isTracking) {
+      await LibreLocation.setPreset(preset);
+      _addLog('Switched preset to ${preset.name}');
+    }
   }
 
   Future<void> _loadGeofences() async {
@@ -237,6 +250,39 @@ class _LocationPageState extends State<LocationPage> {
             ],
           ),
 
+          // Preset selector
+          _buildCard(
+            title: 'Tracking Preset',
+            children: [
+              SegmentedButton<TrackingPreset>(
+                segments: const [
+                  ButtonSegment(
+                    value: TrackingPreset.low,
+                    label: Text('Low'),
+                    icon: Icon(Icons.battery_full),
+                  ),
+                  ButtonSegment(
+                    value: TrackingPreset.balanced,
+                    label: Text('Balanced'),
+                    icon: Icon(Icons.balance),
+                  ),
+                  ButtonSegment(
+                    value: TrackingPreset.high,
+                    label: Text('High'),
+                    icon: Icon(Icons.gps_fixed),
+                  ),
+                ],
+                selected: {_selectedPreset},
+                onSelectionChanged: (selected) => _switchPreset(selected.first),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _presetDescription(_selectedPreset),
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+
           // Controls
           _buildCard(
             title: 'Tracking',
@@ -302,13 +348,11 @@ class _LocationPageState extends State<LocationPage> {
                   ),
                   if (_powerSaveEnabled)
                     _statusChip('Power Save', Icons.battery_saver, Colors.amber),
-                  if (_currentPosition?.battery != null)
+                  if (LibreLocation.currentPreset != null)
                     _statusChip(
-                      '${(_currentPosition!.battery!.level * 100).round()}%${_currentPosition!.battery!.isCharging ? ' ⚡' : ''}',
-                      _currentPosition!.battery!.isCharging
-                          ? Icons.battery_charging_full
-                          : Icons.battery_std,
-                      Colors.teal,
+                      'Preset: ${LibreLocation.currentPreset!.name}',
+                      Icons.tune,
+                      Colors.purple,
                     ),
                 ],
               ),
@@ -390,6 +434,17 @@ class _LocationPageState extends State<LocationPage> {
         _infoRow('Time', '${pos.timestamp.hour.toString().padLeft(2, '0')}:${pos.timestamp.minute.toString().padLeft(2, '0')}:${pos.timestamp.second.toString().padLeft(2, '0')}'),
       ],
     );
+  }
+
+  String _presetDescription(TrackingPreset preset) {
+    switch (preset) {
+      case TrackingPreset.low:
+        return '~1%/day • Significant changes only • ~500m resolution\nFor "I just want friends to know roughly where I am"';
+      case TrackingPreset.balanced:
+        return '~2-4%/day • Smart motion detection • ~50m resolution\nReliable background tracking for most apps';
+      case TrackingPreset.high:
+        return '~5-8%/day • Frequent GPS updates • ~10m resolution\nFor navigation, fitness, delivery tracking';
+    }
   }
 
   Widget _infoRow(String label, String value) {
