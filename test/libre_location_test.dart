@@ -476,7 +476,7 @@ void main() {
       expect(map['keepAwake'], true);
       expect(map['retentionDays'], 7);
       expect(map['retentionMaxRecords'], 1000);
-      // Verify no old transistorsoft keys are emitted
+      // Verify no legacy keys are emitted
       expect(map.containsKey('stopDetectionDelay'), false);
       expect(map.containsKey('disableStopDetection'), false);
       expect(map.containsKey('preventSuspend'), false);
