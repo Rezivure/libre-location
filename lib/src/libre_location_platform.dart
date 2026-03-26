@@ -10,10 +10,8 @@ abstract class LibreLocationPlatform extends PlatformInterface {
 
   static LibreLocationPlatform _instance = MethodChannelLibreLocation();
 
-  /// The current platform-specific implementation.
   static LibreLocationPlatform get instance => _instance;
 
-  /// Set the platform-specific implementation (for testing).
   static set instance(LibreLocationPlatform instance) {
     PlatformInterface.verifyToken(instance, _token);
     _instance = instance;
@@ -27,12 +25,38 @@ abstract class LibreLocationPlatform extends PlatformInterface {
     throw UnimplementedError('stopTracking() has not been implemented.');
   }
 
-  Future<Position> getCurrentPosition({Accuracy accuracy = Accuracy.high}) {
+  Future<Position> getCurrentPosition({
+    Accuracy accuracy = Accuracy.high,
+    int samples = 3,
+    int timeout = 30,
+    int maximumAge = 0,
+    bool persist = true,
+  }) {
     throw UnimplementedError('getCurrentPosition() has not been implemented.');
+  }
+
+  Future<void> setConfig(LocationConfig config) {
+    throw UnimplementedError('setConfig() has not been implemented.');
   }
 
   Stream<Position> get positionStream {
     throw UnimplementedError('positionStream has not been implemented.');
+  }
+
+  Stream<Position> get motionChangeStream {
+    throw UnimplementedError('motionChangeStream has not been implemented.');
+  }
+
+  Stream<ActivityEvent> get activityChangeStream {
+    throw UnimplementedError('activityChangeStream has not been implemented.');
+  }
+
+  Stream<ProviderEvent> get providerChangeStream {
+    throw UnimplementedError('providerChangeStream has not been implemented.');
+  }
+
+  Stream<HeartbeatEvent> get heartbeatStream {
+    throw UnimplementedError('heartbeatStream has not been implemented.');
   }
 
   Future<bool> get isTracking {

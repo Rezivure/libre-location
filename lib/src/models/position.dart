@@ -1,28 +1,21 @@
+import 'activity_event.dart';
+import 'battery_info.dart';
+
 /// Represents a geographic position with metadata.
 class Position {
-  /// Latitude in degrees.
   final double latitude;
-
-  /// Longitude in degrees.
   final double longitude;
-
-  /// Altitude in meters above the WGS84 ellipsoid.
   final double altitude;
-
-  /// Estimated horizontal accuracy in meters.
   final double accuracy;
-
-  /// Speed in meters per second.
   final double speed;
-
-  /// Heading (bearing) in degrees from true north.
   final double heading;
-
-  /// The time at which this position was determined.
   final DateTime timestamp;
-
-  /// The provider that generated this position ('gps', 'network', 'passive').
   final String provider;
+  final bool isMoving;
+  final ActivityEvent? activity;
+  final BatteryInfo? battery;
+  final double? speedAccuracy;
+  final double? headingAccuracy;
 
   const Position({
     required this.latitude,
@@ -33,9 +26,13 @@ class Position {
     this.heading = 0.0,
     required this.timestamp,
     this.provider = 'unknown',
+    this.isMoving = false,
+    this.activity,
+    this.battery,
+    this.speedAccuracy,
+    this.headingAccuracy,
   });
 
-  /// Creates a [Position] from a platform-specific map.
   factory Position.fromMap(Map<String, dynamic> map) {
     return Position(
       latitude: (map['latitude'] as num).toDouble(),
@@ -48,10 +45,18 @@ class Position {
         (map['timestamp'] as num).toInt(),
       ),
       provider: map['provider'] as String? ?? 'unknown',
+      isMoving: map['isMoving'] as bool? ?? false,
+      activity: map['activity'] != null
+          ? ActivityEvent.fromMap(Map<String, dynamic>.from(map['activity'] as Map))
+          : null,
+      battery: map['battery'] != null
+          ? BatteryInfo.fromMap(Map<String, dynamic>.from(map['battery'] as Map))
+          : null,
+      speedAccuracy: (map['speedAccuracy'] as num?)?.toDouble(),
+      headingAccuracy: (map['headingAccuracy'] as num?)?.toDouble(),
     );
   }
 
-  /// Converts this position to a map for platform communication.
   Map<String, dynamic> toMap() {
     return {
       'latitude': latitude,
@@ -62,10 +67,47 @@ class Position {
       'heading': heading,
       'timestamp': timestamp.millisecondsSinceEpoch,
       'provider': provider,
+      'isMoving': isMoving,
+      if (activity != null) 'activity': activity!.toMap(),
+      if (battery != null) 'battery': battery!.toMap(),
+      if (speedAccuracy != null) 'speedAccuracy': speedAccuracy,
+      if (headingAccuracy != null) 'headingAccuracy': headingAccuracy,
     };
+  }
+
+  Position copyWith({
+    double? latitude,
+    double? longitude,
+    double? altitude,
+    double? accuracy,
+    double? speed,
+    double? heading,
+    DateTime? timestamp,
+    String? provider,
+    bool? isMoving,
+    ActivityEvent? activity,
+    BatteryInfo? battery,
+    double? speedAccuracy,
+    double? headingAccuracy,
+  }) {
+    return Position(
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      altitude: altitude ?? this.altitude,
+      accuracy: accuracy ?? this.accuracy,
+      speed: speed ?? this.speed,
+      heading: heading ?? this.heading,
+      timestamp: timestamp ?? this.timestamp,
+      provider: provider ?? this.provider,
+      isMoving: isMoving ?? this.isMoving,
+      activity: activity ?? this.activity,
+      battery: battery ?? this.battery,
+      speedAccuracy: speedAccuracy ?? this.speedAccuracy,
+      headingAccuracy: headingAccuracy ?? this.headingAccuracy,
+    );
   }
 
   @override
   String toString() =>
-      'Position(lat: $latitude, lng: $longitude, acc: ${accuracy}m, provider: $provider)';
+      'Position(lat: $latitude, lng: $longitude, acc: ${accuracy}m, moving: $isMoving, provider: $provider)';
 }

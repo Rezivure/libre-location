@@ -11,4 +11,7 @@ enum Accuracy {
 
   /// Passive mode — only receives locations requested by other apps.
   passive,
+
+  /// Navigation-grade accuracy. Highest possible precision.
+  navigation,
 }

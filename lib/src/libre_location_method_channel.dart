@@ -5,13 +5,19 @@ import '../libre_location.dart';
 /// The MethodChannel-based implementation of [LibreLocationPlatform].
 class MethodChannelLibreLocation extends LibreLocationPlatform {
   static const MethodChannel _channel = MethodChannel('libre_location');
-  static const EventChannel _positionChannel =
-      EventChannel('libre_location/position');
-  static const EventChannel _geofenceChannel =
-      EventChannel('libre_location/geofence');
+  static const EventChannel _positionChannel = EventChannel('libre_location/position');
+  static const EventChannel _geofenceChannel = EventChannel('libre_location/geofence');
+  static const EventChannel _motionChangeChannel = EventChannel('libre_location/motionChange');
+  static const EventChannel _activityChangeChannel = EventChannel('libre_location/activityChange');
+  static const EventChannel _providerChangeChannel = EventChannel('libre_location/providerChange');
+  static const EventChannel _heartbeatChannel = EventChannel('libre_location/heartbeat');
 
   Stream<Position>? _positionStream;
   Stream<GeofenceEvent>? _geofenceStream;
+  Stream<Position>? _motionChangeStream;
+  Stream<ActivityEvent>? _activityChangeStream;
+  Stream<ProviderEvent>? _providerChangeStream;
+  Stream<HeartbeatEvent>? _heartbeatStream;
 
   @override
   Future<void> startTracking(LocationConfig config) async {
@@ -24,20 +30,69 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   }
 
   @override
-  Future<Position> getCurrentPosition({Accuracy accuracy = Accuracy.high}) async {
+  Future<Position> getCurrentPosition({
+    Accuracy accuracy = Accuracy.high,
+    int samples = 3,
+    int timeout = 30,
+    int maximumAge = 0,
+    bool persist = true,
+  }) async {
     final result = await _channel.invokeMapMethod<String, dynamic>(
       'getCurrentPosition',
-      {'accuracy': accuracy.index},
+      {
+        'accuracy': accuracy.index,
+        'samples': samples,
+        'timeout': timeout,
+        'maximumAge': maximumAge,
+        'persist': persist,
+      },
     );
     return Position.fromMap(result!);
+  }
+
+  @override
+  Future<void> setConfig(LocationConfig config) async {
+    await _channel.invokeMethod('setConfig', config.toMap());
   }
 
   @override
   Stream<Position> get positionStream {
     _positionStream ??= _positionChannel
         .receiveBroadcastStream()
-        .map((event) => Position.fromMap(Map<String, dynamic>.from(event)));
+        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)));
     return _positionStream!;
+  }
+
+  @override
+  Stream<Position> get motionChangeStream {
+    _motionChangeStream ??= _motionChangeChannel
+        .receiveBroadcastStream()
+        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)));
+    return _motionChangeStream!;
+  }
+
+  @override
+  Stream<ActivityEvent> get activityChangeStream {
+    _activityChangeStream ??= _activityChangeChannel
+        .receiveBroadcastStream()
+        .map((event) => ActivityEvent.fromMap(Map<String, dynamic>.from(event as Map)));
+    return _activityChangeStream!;
+  }
+
+  @override
+  Stream<ProviderEvent> get providerChangeStream {
+    _providerChangeStream ??= _providerChangeChannel
+        .receiveBroadcastStream()
+        .map((event) => ProviderEvent.fromMap(Map<String, dynamic>.from(event as Map)));
+    return _providerChangeStream!;
+  }
+
+  @override
+  Stream<HeartbeatEvent> get heartbeatStream {
+    _heartbeatStream ??= _heartbeatChannel
+        .receiveBroadcastStream()
+        .map((event) => HeartbeatEvent.fromMap(Map<String, dynamic>.from(event as Map)));
+    return _heartbeatStream!;
   }
 
   @override
@@ -69,8 +124,7 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<GeofenceEvent> get geofenceStream {
     _geofenceStream ??= _geofenceChannel
         .receiveBroadcastStream()
-        .map((event) =>
-            GeofenceEvent.fromMap(Map<String, dynamic>.from(event)));
+        .map((event) => GeofenceEvent.fromMap(Map<String, dynamic>.from(event as Map)));
     return _geofenceStream!;
   }
 
