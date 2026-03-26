@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:libre_location/libre_location.dart';
 
-void main() => runApp(const MyApp());
+void main() {
+  runApp(const MyApp());
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -10,8 +12,11 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Libre Location Example',
-      theme: ThemeData(colorSchemeSeed: Colors.green, useMaterial3: true),
+      title: 'Libre Location Demo',
+      theme: ThemeData(
+        colorSchemeSeed: Colors.green,
+        useMaterial3: true,
+      ),
       home: const LocationPage(),
     );
   }
@@ -25,22 +30,39 @@ class LocationPage extends StatefulWidget {
 }
 
 class _LocationPageState extends State<LocationPage> {
+  // State
   Position? _currentPosition;
   bool _isTracking = false;
+  bool _isMoving = false;
   LocationPermission _permission = LocationPermission.denied;
-  final List<String> _log = [];
+  ActivityEvent? _currentActivity;
+  int _heartbeatCount = 0;
+  bool _powerSaveEnabled = false;
+  List<Geofence> _geofences = [];
+  final List<String> _logs = [];
 
+  // Subscriptions
   StreamSubscription<Position>? _positionSub;
   StreamSubscription<Position>? _motionSub;
   StreamSubscription<ActivityEvent>? _activitySub;
-  StreamSubscription<ProviderEvent>? _providerSub;
   StreamSubscription<HeartbeatEvent>? _heartbeatSub;
+  StreamSubscription<bool>? _powerSaveSub;
   StreamSubscription<GeofenceEvent>? _geofenceSub;
 
   @override
   void initState() {
     super.initState();
-    _checkPermission();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _checkPermission();
+    final tracking = await LibreLocation.isTracking;
+    if (tracking) {
+      setState(() => _isTracking = true);
+      _subscribeAll();
+    }
+    _loadGeofences();
   }
 
   @override
@@ -53,89 +75,87 @@ class _LocationPageState extends State<LocationPage> {
     _positionSub?.cancel();
     _motionSub?.cancel();
     _activitySub?.cancel();
-    _providerSub?.cancel();
     _heartbeatSub?.cancel();
+    _powerSaveSub?.cancel();
     _geofenceSub?.cancel();
-  }
-
-  void _addLog(String msg) {
-    setState(() {
-      _log.insert(0, '${DateTime.now().toIso8601String().substring(11, 19)} $msg');
-      if (_log.length > 100) _log.removeLast();
-    });
-  }
-
-  Future<void> _checkPermission() async {
-    final p = await LibreLocation.checkPermission();
-    setState(() => _permission = p);
-    _addLog('Permission: ${p.name}');
-  }
-
-  Future<void> _requestPermission() async {
-    final p = await LibreLocation.requestPermission();
-    setState(() => _permission = p);
-    _addLog('Permission granted: ${p.name}');
-  }
-
-  Future<void> _getCurrentPosition() async {
-    _addLog('Requesting position...');
-    try {
-      final pos = await LibreLocation.getCurrentPosition(
-        accuracy: Accuracy.high, samples: 3, timeout: 30,
-      );
-      setState(() => _currentPosition = pos);
-      _addLog('Position: ${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)}');
-    } catch (e) {
-      _addLog('Error: $e');
-    }
   }
 
   void _subscribeAll() {
     _positionSub = LibreLocation.positionStream.listen((pos) {
       setState(() => _currentPosition = pos);
-      _addLog('Location: ${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)} (${pos.accuracy.toStringAsFixed(0)}m)');
+      _addLog('Position: ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)} ±${pos.accuracy.toStringAsFixed(0)}m');
     });
+
     _motionSub = LibreLocation.motionChangeStream.listen((pos) {
+      setState(() => _isMoving = pos.isMoving);
       _addLog('Motion: ${pos.isMoving ? "MOVING" : "STATIONARY"}');
     });
-    _activitySub = LibreLocation.activityChangeStream.listen((e) {
-      _addLog('Activity: ${e.activity} (${e.confidence}%)');
+
+    _activitySub = LibreLocation.activityChangeStream.listen((activity) {
+      setState(() => _currentActivity = activity);
+      _addLog('Activity: ${activity.activity} (${activity.confidence}%)');
     });
-    _providerSub = LibreLocation.providerChangeStream.listen((e) {
-      _addLog('Provider: enabled=${e.enabled}, gps=${e.gps}');
+
+    _heartbeatSub = LibreLocation.heartbeatStream.listen((_) {
+      setState(() => _heartbeatCount++);
+      _addLog('Heartbeat #$_heartbeatCount');
     });
-    _heartbeatSub = LibreLocation.heartbeatStream.listen((e) {
-      _addLog('Heartbeat: ${e.position.latitude.toStringAsFixed(4)}, ${e.position.longitude.toStringAsFixed(4)}');
+
+    _powerSaveSub = LibreLocation.powerSaveChangeStream.listen((enabled) {
+      setState(() => _powerSaveEnabled = enabled);
+      _addLog('Power save: ${enabled ? "ON" : "OFF"}');
     });
-    _geofenceSub = LibreLocation.geofenceStream.listen((e) {
-      _addLog('Geofence: ${e.geofence.id} ${e.transition.name}');
+
+    _geofenceSub = LibreLocation.geofenceStream.listen((event) {
+      _addLog('Geofence ${event.id}: ${event.transition}');
     });
   }
 
+  void _addLog(String msg) {
+    final time = TimeOfDay.now();
+    final entry = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')} $msg';
+    setState(() {
+      _logs.insert(0, entry);
+      if (_logs.length > 100) _logs.removeLast();
+    });
+  }
+
+  Future<void> _checkPermission() async {
+    final perm = await LibreLocation.checkPermission();
+    setState(() => _permission = perm);
+  }
+
+  Future<void> _requestPermission() async {
+    final perm = await LibreLocation.requestPermission();
+    setState(() => _permission = perm);
+  }
+
+  Future<void> _getCurrentPosition() async {
+    try {
+      final pos = await LibreLocation.getCurrentPosition();
+      setState(() => _currentPosition = pos);
+      _addLog('Got position: ±${pos.accuracy.toStringAsFixed(0)}m');
+    } catch (e) {
+      _addLog('Error getting position: $e');
+    }
+  }
+
   Future<void> _startTracking() async {
-    const config = LocationConfig(
+    await LibreLocation.startTracking(const LocationConfig(
       accuracy: Accuracy.high,
-      distanceFilter: 10.0,
-      stopOnTerminate: false,
-      startOnBoot: true,
-      enableHeadless: true,
-      heartbeatInterval: 60,
-      debug: true,
-      logLevel: LogLevel.info,
-      notification: NotificationConfig(
-        title: 'Libre Location Demo',
-        text: 'Tracking location',
-        sticky: true,
-      ),
-      backgroundPermissionRationale: PermissionRationale(
-        title: 'Background Location',
-        message: 'This app needs background location for tracking.',
-      ),
-      locationAuthorizationRequest: LocationAuthorizationRequest.always,
-    );
-    await LibreLocation.startTracking(config);
+      mode: TrackingMode.balanced,
+      intervalMs: 15000,
+      distanceFilter: 5.0,
+      enableMotionDetection: true,
+      notificationTitle: 'Libre Location Demo',
+      notificationBody: 'Tracking your location',
+    ));
+
     _subscribeAll();
-    setState(() => _isTracking = true);
+    setState(() {
+      _isTracking = true;
+      _heartbeatCount = 0;
+    });
     _addLog('Tracking started');
   }
 
@@ -146,102 +166,302 @@ class _LocationPageState extends State<LocationPage> {
     _addLog('Tracking stopped');
   }
 
-  Future<void> _updateConfig() async {
-    const config = LocationConfig(
-      accuracy: Accuracy.navigation,
-      distanceFilter: 5.0,
-      heartbeatInterval: 30,
-    );
-    await LibreLocation.setConfig(config);
-    _addLog('Config updated');
+  Future<void> _loadGeofences() async {
+    try {
+      final fences = await LibreLocation.getGeofences();
+      setState(() => _geofences = fences);
+    } catch (_) {}
   }
 
   Future<void> _addGeofence() async {
-    if (_currentPosition == null) { _addLog('Get position first'); return; }
-    final g = Geofence(
-      id: 'test_geofence',
+    if (_currentPosition == null) {
+      _addLog('Get a position first before adding geofence');
+      return;
+    }
+    final id = 'fence_${DateTime.now().millisecondsSinceEpoch}';
+    final geofence = Geofence(
+      id: id,
       latitude: _currentPosition!.latitude,
       longitude: _currentPosition!.longitude,
-      radiusMeters: 100.0,
-      triggers: const {GeofenceTransition.enter, GeofenceTransition.exit, GeofenceTransition.dwell},
-      dwellDuration: const Duration(minutes: 1),
+      radiusMeters: 100,
     );
-    await LibreLocation.addGeofence(g);
-    _addLog('Geofence added (100m)');
+    await LibreLocation.addGeofence(geofence);
+    _addLog('Added geofence: $id');
+    _loadGeofences();
   }
 
-  Future<void> _removeGeofence() async {
-    await LibreLocation.removeGeofence('test_geofence');
-    _addLog('Geofence removed');
+  Future<void> _removeGeofence(String id) async {
+    await LibreLocation.removeGeofence(id);
+    _addLog('Removed geofence: $id');
+    _loadGeofences();
+  }
+
+  Future<void> _loadLogs() async {
+    try {
+      final logs = await LibreLocation.getLog();
+      for (final log in logs.take(20)) {
+        _addLog('[native] ${log['level']}: ${log['message']}');
+      }
+    } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Libre Location')),
-      body: Padding(
+      appBar: AppBar(
+        title: const Text('Libre Location'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download),
+            tooltip: 'Load native logs',
+            onPressed: _loadLogs,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          // Permission
+          _buildCard(
+            title: 'Permission',
+            trailing: Chip(label: Text(_permission.name)),
+            children: [
+              if (_permission == LocationPermission.denied ||
+                  _permission == LocationPermission.deniedForever)
+                FilledButton.tonal(
+                  onPressed: _requestPermission,
+                  child: const Text('Request Permission'),
+                ),
+            ],
+          ),
+
+          // Controls
+          _buildCard(
+            title: 'Tracking',
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _getCurrentPosition,
+                      icon: const Icon(Icons.my_location),
+                      label: const Text('Get Position'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _isTracking
+                        ? FilledButton.icon(
+                            onPressed: _stopTracking,
+                            icon: const Icon(Icons.stop),
+                            label: const Text('Stop'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: theme.colorScheme.error,
+                              foregroundColor: theme.colorScheme.onError,
+                            ),
+                          )
+                        : FilledButton.icon(
+                            onPressed: _startTracking,
+                            icon: const Icon(Icons.play_arrow),
+                            label: const Text('Start'),
+                          ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+
+          // Position
+          if (_currentPosition != null) _buildPositionCard(),
+
+          // Status row
+          _buildCard(
+            title: 'Status',
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _statusChip(
+                    _isMoving ? 'Moving' : 'Stationary',
+                    _isMoving ? Icons.directions_walk : Icons.accessibility_new,
+                    _isMoving ? Colors.green : Colors.orange,
+                  ),
+                  if (_currentActivity != null)
+                    _statusChip(
+                      _activityLabel(_currentActivity!.activity),
+                      _activityIcon(_currentActivity!.activity),
+                      Colors.blue,
+                    ),
+                  _statusChip(
+                    '♥ $_heartbeatCount',
+                    Icons.favorite,
+                    Colors.red,
+                  ),
+                  if (_powerSaveEnabled)
+                    _statusChip('Power Save', Icons.battery_saver, Colors.amber),
+                  if (_currentPosition?.battery != null)
+                    _statusChip(
+                      '${(_currentPosition!.battery!.level * 100).round()}%${_currentPosition!.battery!.isCharging ? ' ⚡' : ''}',
+                      _currentPosition!.battery!.isCharging
+                          ? Icons.battery_charging_full
+                          : Icons.battery_std,
+                      Colors.teal,
+                    ),
+                ],
+              ),
+            ],
+          ),
+
+          // Geofences
+          _buildCard(
+            title: 'Geofences (${_geofences.length})',
+            trailing: IconButton(
+              icon: const Icon(Icons.add_location_alt),
+              onPressed: _addGeofence,
+              tooltip: 'Add at current position',
+            ),
+            children: [
+              if (_geofences.isEmpty)
+                const Text('No geofences. Tap + to add one at current position.',
+                    style: TextStyle(color: Colors.grey)),
+              for (final fence in _geofences)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.location_on, size: 20),
+                  title: Text(fence.id, style: const TextStyle(fontSize: 12)),
+                  subtitle: Text(
+                    '${fence.latitude.toStringAsFixed(4)}, ${fence.longitude.toStringAsFixed(4)} r=${fence.radiusMeters.round()}m',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, size: 18),
+                    onPressed: () => _removeGeofence(fence.id),
+                  ),
+                ),
+            ],
+          ),
+
+          // Log viewer
+          _buildCard(
+            title: 'Log (${_logs.length})',
+            trailing: TextButton(
+              onPressed: () => setState(() => _logs.clear()),
+              child: const Text('Clear'),
+            ),
+            children: [
+              SizedBox(
+                height: 200,
+                child: _logs.isEmpty
+                    ? const Center(child: Text('No log entries', style: TextStyle(color: Colors.grey)))
+                    : ListView.builder(
+                        itemCount: _logs.length,
+                        itemBuilder: (_, i) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1),
+                          child: Text(
+                            _logs[i],
+                            style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPositionCard() {
+    final pos = _currentPosition!;
+    return _buildCard(
+      title: 'Current Position',
+      children: [
+        _infoRow('Latitude', pos.latitude.toStringAsFixed(6)),
+        _infoRow('Longitude', pos.longitude.toStringAsFixed(6)),
+        _infoRow('Altitude', '${pos.altitude.toStringAsFixed(1)} m'),
+        _infoRow('Accuracy', '±${pos.accuracy.toStringAsFixed(1)} m'),
+        _infoRow('Speed', '${pos.speed.toStringAsFixed(1)} m/s'),
+        _infoRow('Heading', '${pos.heading.toStringAsFixed(0)}°'),
+        _infoRow('Provider', pos.provider),
+        _infoRow('Time', '${pos.timestamp.hour.toString().padLeft(2, '0')}:${pos.timestamp.minute.toString().padLeft(2, '0')}:${pos.timestamp.second.toString().padLeft(2, '0')}'),
+      ],
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard({
+    required String title,
+    Widget? trailing,
+    required List<Widget> children,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(children: [
-                  Icon(_permission == LocationPermission.always ? Icons.check_circle : Icons.warning,
-                    color: _permission == LocationPermission.always ? Colors.green : Colors.orange),
-                  const SizedBox(width: 8),
-                  Text('Permission: ${_permission.name}'),
-                  const Spacer(),
-                  if (_permission == LocationPermission.denied)
-                    TextButton(onPressed: _requestPermission, child: const Text('Request')),
-                ]),
-              ),
-            ),
-            if (_currentPosition != null)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('${_currentPosition!.latitude.toStringAsFixed(6)}, ${_currentPosition!.longitude.toStringAsFixed(6)}',
-                      style: Theme.of(context).textTheme.titleMedium),
-                    Text('Acc: ${_currentPosition!.accuracy.toStringAsFixed(1)}m | Speed: ${_currentPosition!.speed.toStringAsFixed(1)} m/s | Moving: ${_currentPosition!.isMoving}'),
-                    if (_currentPosition!.activity != null)
-                      Text('Activity: ${_currentPosition!.activity!.activity} (${_currentPosition!.activity!.confidence}%)'),
-                    if (_currentPosition!.battery != null)
-                      Text('Battery: ${(_currentPosition!.battery!.level * 100).toStringAsFixed(0)}%${_currentPosition!.battery!.isCharging ? " charging" : ""}'),
-                  ]),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(title, style: Theme.of(context).textTheme.titleMedium),
                 ),
-              ),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              ElevatedButton.icon(onPressed: _getCurrentPosition, icon: const Icon(Icons.my_location), label: const Text('Get Position')),
-              ElevatedButton.icon(
-                onPressed: _isTracking ? _stopTracking : _startTracking,
-                icon: Icon(_isTracking ? Icons.stop : Icons.play_arrow),
-                label: Text(_isTracking ? 'Stop' : 'Start'),
-                style: ElevatedButton.styleFrom(backgroundColor: _isTracking ? Colors.red.shade100 : null),
-              ),
-              if (_isTracking) OutlinedButton(onPressed: _updateConfig, child: const Text('Update Config')),
-              OutlinedButton(onPressed: _addGeofence, child: const Text('+ Fence')),
-              OutlinedButton(onPressed: _removeGeofence, child: const Text('- Fence')),
-            ]),
-            const SizedBox(height: 12),
-            Text('Event Log', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 4),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8)),
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(8),
-                  itemCount: _log.length,
-                  itemBuilder: (_, i) => Text(_log[i], style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
-                ),
-              ),
+                if (trailing != null) trailing,
+              ],
             ),
+            if (children.isNotEmpty) const SizedBox(height: 8),
+            ...children,
           ],
         ),
       ),
     );
+  }
+
+  Widget _statusChip(String label, IconData icon, Color color) {
+    return Chip(
+      avatar: Icon(icon, size: 16, color: color),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
+  String _activityLabel(String activity) {
+    switch (activity) {
+      case 'still': return 'Still';
+      case 'walking': return 'Walking';
+      case 'running': return 'Running';
+      case 'in_vehicle': return 'Driving';
+      case 'on_bicycle': return 'Cycling';
+      case 'on_foot': return 'On Foot';
+      default: return activity;
+    }
+  }
+
+  IconData _activityIcon(String activity) {
+    switch (activity) {
+      case 'still': return Icons.accessibility_new;
+      case 'walking': return Icons.directions_walk;
+      case 'running': return Icons.directions_run;
+      case 'in_vehicle': return Icons.directions_car;
+      case 'on_bicycle': return Icons.directions_bike;
+      case 'on_foot': return Icons.directions_walk;
+      default: return Icons.help_outline;
+    }
   }
 }
