@@ -98,7 +98,14 @@ class LocationConfig {
       'maxRecordsToPersist': maxRecordsToPersist,
       'debug': debug,
       'logLevel': logLevel.index,
-      if (notification != null) 'notification': notification!.toMap(),
+      if (notification != null) ...{
+        'notification': notification!.toMap(),
+        // Flatten for Android native compatibility
+        'notificationTitle': notification!.title,
+        'notificationBody': notification!.text,
+        'notificationSticky': notification!.sticky,
+        'notificationPriority': notification!.priority.index,
+      },
       if (backgroundPermissionRationale != null)
         'backgroundPermissionRationale': backgroundPermissionRationale!.toMap(),
       'locationAuthorizationRequest': locationAuthorizationRequest.index,
