@@ -49,9 +49,7 @@ class Position {
       activity: map['activity'] != null
           ? ActivityEvent.fromMap(Map<String, dynamic>.from(map['activity'] as Map))
           : null,
-      battery: map['battery'] != null
-          ? BatteryInfo.fromMap(Map<String, dynamic>.from(map['battery'] as Map))
-          : null,
+      battery: _parseBattery(map),
       speedAccuracy: (map['speedAccuracy'] as num?)?.toDouble(),
       headingAccuracy: (map['headingAccuracy'] as num?)?.toDouble(),
     );
@@ -105,6 +103,23 @@ class Position {
       speedAccuracy: speedAccuracy ?? this.speedAccuracy,
       headingAccuracy: headingAccuracy ?? this.headingAccuracy,
     );
+  }
+
+  /// Parses battery info from either a nested 'battery' map or top-level
+  /// 'batteryLevel' / 'isCharging' keys sent by native platforms.
+  static BatteryInfo? _parseBattery(Map<String, dynamic> map) {
+    if (map['battery'] != null) {
+      return BatteryInfo.fromMap(Map<String, dynamic>.from(map['battery'] as Map));
+    }
+    // Native sends batteryLevel (0-100 int) and isCharging (bool) as top-level keys
+    final batteryLevel = map['batteryLevel'];
+    if (batteryLevel != null) {
+      return BatteryInfo(
+        level: (batteryLevel as num).toDouble() / 100.0,
+        isCharging: map['isCharging'] as bool? ?? false,
+      );
+    }
+    return null;
   }
 
   @override

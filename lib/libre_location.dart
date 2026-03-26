@@ -108,6 +108,58 @@ class LibreLocation {
   static Future<LocationPermission> requestPermission() {
     return LibreLocationPlatform.instance.requestPermission();
   }
+
+  /// Registers a headless callback dispatcher for receiving location updates
+  /// after app termination (Android only).
+  ///
+  /// Both callbacks must be top-level or static functions.
+  ///
+  /// ```dart
+  /// @pragma('vm:entry-point')
+  /// void headlessDispatcher() {
+  ///   // Initialize the headless isolate
+  /// }
+  ///
+  /// @pragma('vm:entry-point')
+  /// void onHeadlessLocation(Map<String, dynamic> data) {
+  ///   print('Headless location: $data');
+  /// }
+  ///
+  /// LibreLocation.registerHeadlessDispatcher(headlessDispatcher, onHeadlessLocation);
+  /// ```
+  static Future<void> registerHeadlessDispatcher(
+    void Function() dispatcherCallback,
+    void Function(Map<String, dynamic>) userCallback,
+  ) {
+    return LibreLocationPlatform.instance.registerHeadlessDispatcher(
+      dispatcherCallback,
+      userCallback,
+    );
+  }
+
+  /// Returns `true` if the app is battery-optimized (Android only).
+  /// When optimized, the OS may aggressively kill background processes.
+  static Future<bool> checkBatteryOptimization() {
+    return LibreLocationPlatform.instance.checkBatteryOptimization();
+  }
+
+  /// Requests the system to exempt this app from battery optimization (Android only).
+  /// Returns `true` if the settings dialog was opened.
+  static Future<bool> requestBatteryOptimizationExemption() {
+    return LibreLocationPlatform.instance.requestBatteryOptimizationExemption();
+  }
+
+  /// Checks manufacturer-specific auto-start settings (Android only).
+  /// Returns a map with `manufacturer`, `hasAutoStartSetting`, and `isBatteryOptimized`.
+  static Future<Map<String, dynamic>> isAutoStartEnabled() {
+    return LibreLocationPlatform.instance.isAutoStartEnabled();
+  }
+
+  /// Opens the manufacturer-specific power/battery settings page (Android only).
+  /// Returns `true` if a settings page was opened.
+  static Future<bool> openPowerManagerSettings() {
+    return LibreLocationPlatform.instance.openPowerManagerSettings();
+  }
 }
 
 /// Represents the current state of location permissions.

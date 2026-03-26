@@ -1,3 +1,5 @@
+import 'dart:ui' show PluginUtilities;
+
 import 'package:flutter/services.dart';
 
 import '../libre_location.dart';
@@ -138,5 +140,45 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Future<LocationPermission> requestPermission() async {
     final result = await _channel.invokeMethod<int>('requestPermission');
     return LocationPermission.values[result ?? 0];
+  }
+
+  @override
+  Future<void> registerHeadlessDispatcher(
+    void Function() dispatcherCallback,
+    void Function(Map<String, dynamic>) userCallback,
+  ) async {
+    final dispatcherHandle = PluginUtilities.getCallbackHandle(dispatcherCallback)?.toRawHandle();
+    final userHandle = PluginUtilities.getCallbackHandle(userCallback)?.toRawHandle();
+    if (dispatcherHandle == null || userHandle == null) {
+      throw ArgumentError('Callbacks must be top-level or static functions');
+    }
+    await _channel.invokeMethod('registerHeadlessDispatcher', {
+      'dispatcherHandle': dispatcherHandle,
+      'userCallbackHandle': userHandle,
+    });
+  }
+
+  @override
+  Future<bool> checkBatteryOptimization() async {
+    final result = await _channel.invokeMethod<bool>('checkBatteryOptimization');
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> requestBatteryOptimizationExemption() async {
+    final result = await _channel.invokeMethod<bool>('requestBatteryOptimizationExemption');
+    return result ?? false;
+  }
+
+  @override
+  Future<Map<String, dynamic>> isAutoStartEnabled() async {
+    final result = await _channel.invokeMapMethod<String, dynamic>('isAutoStartEnabled');
+    return result ?? {};
+  }
+
+  @override
+  Future<bool> openPowerManagerSettings() async {
+    final result = await _channel.invokeMethod<bool>('openPowerManagerSettings');
+    return result ?? false;
   }
 }

@@ -86,4 +86,34 @@ abstract class LibreLocationPlatform extends PlatformInterface {
   Future<LocationPermission> requestPermission() {
     throw UnimplementedError('requestPermission() has not been implemented.');
   }
+
+  /// Registers a headless callback dispatcher for receiving location updates
+  /// after app termination (Android only).
+  Future<void> registerHeadlessDispatcher(
+    void Function() dispatcherCallback,
+    void Function(Map<String, dynamic>) userCallback,
+  ) {
+    throw UnimplementedError('registerHeadlessDispatcher() has not been implemented.');
+  }
+
+  /// Returns whether the app is battery-optimized (Android only).
+  /// `true` means the OS may kill it aggressively.
+  Future<bool> checkBatteryOptimization() {
+    throw UnimplementedError('checkBatteryOptimization() has not been implemented.');
+  }
+
+  /// Requests battery optimization exemption from the system (Android only).
+  Future<bool> requestBatteryOptimizationExemption() {
+    throw UnimplementedError('requestBatteryOptimizationExemption() has not been implemented.');
+  }
+
+  /// Checks manufacturer-specific auto-start settings availability (Android only).
+  Future<Map<String, dynamic>> isAutoStartEnabled() {
+    throw UnimplementedError('isAutoStartEnabled() has not been implemented.');
+  }
+
+  /// Opens the manufacturer-specific power/battery settings page (Android only).
+  Future<bool> openPowerManagerSettings() {
+    throw UnimplementedError('openPowerManagerSettings() has not been implemented.');
+  }
 }
