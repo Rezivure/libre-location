@@ -286,7 +286,7 @@ class MotionDetector(private val context: Context) {
      * Returns the current estimated activity as a map suitable for method channel.
      */
     fun getCurrentActivity(): Map<String, Any> = mapOf(
-        "type" to lastActivityType,
+        "activity" to lastActivityType,
         "confidence" to lastActivityConfidence,
         "isMoving" to isMoving,
     )

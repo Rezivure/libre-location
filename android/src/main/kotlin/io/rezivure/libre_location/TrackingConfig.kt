@@ -7,9 +7,13 @@ import org.json.JSONObject
 /**
  * Centralized tracking configuration that can be persisted across restarts.
  *
- * Supports all configuration parameters from the Dart [LocationConfig] plus
- * extended parameters for heartbeat, activity recognition, motion detection,
- * persistence, and foreground service notification.
+ * All time values are stored in milliseconds internally.
+ * Dart sends:
+ *   - stopTimeout in minutes
+ *   - stopDetectionDelay in seconds (treated as ms-ready from Dart, but we handle both)
+ *   - motionTriggerDelay in ms
+ *   - heartbeatInterval in seconds
+ *   - intervalMs in ms
  */
 data class TrackingConfig(
     // Core location parameters
@@ -30,17 +34,17 @@ data class TrackingConfig(
     val startOnBoot: Boolean = true,
     val enableHeadless: Boolean = true,
 
-    // Motion detection
-    val stopTimeout: Long = 300_000L,               // 5 min — time stationary before declaring "stopped"
-    val stopDetectionDelay: Long = 0L,              // delay before engaging stop detection
+    // Motion detection — all times in ms
+    val stopTimeout: Long = 300_000L,               // 5 min in ms
+    val stopDetectionDelay: Long = 0L,
     val stationaryRadius: Float = 25f,              // meters
-    val motionTriggerDelay: Long = 0L,              // delay before re-engaging motion tracking
+    val motionTriggerDelay: Long = 0L,
     val disableStopDetection: Boolean = false,
     val disableMotionActivityUpdates: Boolean = false,
     val useSignificantChangesOnly: Boolean = false,
 
-    // Heartbeat
-    val heartbeatInterval: Long = 0L,               // 0 = disabled; seconds between heartbeat emissions
+    // Heartbeat — in seconds
+    val heartbeatInterval: Long = 0L,
 
     // Activity recognition
     val activityRecognitionInterval: Long = 10_000L,
@@ -101,24 +105,46 @@ data class TrackingConfig(
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         /**
-         * Creates a [TrackingConfig] from a Dart method channel arguments map.
-         * Merges any provided values with defaults.
+         * Creates a [TrackingConfig] from Dart method channel arguments.
+         * Handles unit conversions:
+         *   - stopTimeout: Dart sends minutes → convert to ms
+         *   - heartbeatInterval: Dart sends seconds → keep as seconds (used as-is)
+         *   - intervalMs: already in ms
          */
         fun fromMap(args: Map<*, *>): TrackingConfig {
+            // Extract notification config from nested map if present
+            val notificationMap = args["notification"] as? Map<*, *>
+            val notifTitle = args["notificationTitle"] as? String
+                ?: notificationMap?.get("title") as? String
+                ?: "Location Tracking"
+            val notifBody = args["notificationBody"] as? String
+                ?: notificationMap?.get("text") as? String
+                ?: "Tracking your location in the background"
+            val notifPriority = args["notificationPriority"] as? Int
+                ?: (notificationMap?.get("priority") as? Number)?.toInt()
+                ?: -1
+            val notifSticky = args["notificationSticky"] as? Boolean
+                ?: notificationMap?.get("sticky") as? Boolean
+                ?: true
+
+            // stopTimeout: Dart sends in minutes, convert to ms
+            val stopTimeoutMinutes = (args["stopTimeout"] as? Number)?.toLong() ?: 5L
+            val stopTimeoutMs = stopTimeoutMinutes * 60_000L
+
             return TrackingConfig(
                 accuracy = args["accuracy"] as? Int ?: 0,
                 intervalMs = (args["intervalMs"] as? Number)?.toLong() ?: 60_000L,
                 distanceFilter = (args["distanceFilter"] as? Number)?.toFloat() ?: 10f,
                 mode = args["mode"] as? Int ?: 1,
                 enableMotionDetection = args["enableMotionDetection"] as? Boolean ?: true,
-                notificationTitle = args["notificationTitle"] as? String ?: "Location Tracking",
-                notificationBody = args["notificationBody"] as? String ?: "Tracking your location in the background",
-                notificationPriority = args["notificationPriority"] as? Int ?: -1,
-                notificationSticky = args["notificationSticky"] as? Boolean ?: true,
+                notificationTitle = notifTitle,
+                notificationBody = notifBody,
+                notificationPriority = notifPriority,
+                notificationSticky = notifSticky,
                 stopOnTerminate = args["stopOnTerminate"] as? Boolean ?: false,
                 startOnBoot = args["startOnBoot"] as? Boolean ?: true,
                 enableHeadless = args["enableHeadless"] as? Boolean ?: true,
-                stopTimeout = (args["stopTimeout"] as? Number)?.toLong() ?: 300_000L,
+                stopTimeout = stopTimeoutMs,
                 stopDetectionDelay = (args["stopDetectionDelay"] as? Number)?.toLong() ?: 0L,
                 stationaryRadius = (args["stationaryRadius"] as? Number)?.toFloat() ?: 25f,
                 motionTriggerDelay = (args["motionTriggerDelay"] as? Number)?.toLong() ?: 0L,
@@ -147,7 +173,36 @@ data class TrackingConfig(
                 for (key in obj.keys()) {
                     map[key] = obj.get(key)
                 }
-                fromMap(map)
+                // When restoring from persisted JSON, stopTimeout is already in ms
+                // so we need to handle that — use the raw value since toMap() stores ms
+                TrackingConfig(
+                    accuracy = (map["accuracy"] as? Number)?.toInt() ?: 0,
+                    intervalMs = (map["intervalMs"] as? Number)?.toLong() ?: 60_000L,
+                    distanceFilter = (map["distanceFilter"] as? Number)?.toFloat() ?: 10f,
+                    mode = (map["mode"] as? Number)?.toInt() ?: 1,
+                    enableMotionDetection = map["enableMotionDetection"] as? Boolean ?: true,
+                    notificationTitle = map["notificationTitle"] as? String ?: "Location Tracking",
+                    notificationBody = map["notificationBody"] as? String ?: "Tracking your location in the background",
+                    notificationPriority = (map["notificationPriority"] as? Number)?.toInt() ?: -1,
+                    notificationSticky = map["notificationSticky"] as? Boolean ?: true,
+                    stopOnTerminate = map["stopOnTerminate"] as? Boolean ?: false,
+                    startOnBoot = map["startOnBoot"] as? Boolean ?: true,
+                    enableHeadless = map["enableHeadless"] as? Boolean ?: true,
+                    stopTimeout = (map["stopTimeout"] as? Number)?.toLong() ?: 300_000L,
+                    stopDetectionDelay = (map["stopDetectionDelay"] as? Number)?.toLong() ?: 0L,
+                    stationaryRadius = (map["stationaryRadius"] as? Number)?.toFloat() ?: 25f,
+                    motionTriggerDelay = (map["motionTriggerDelay"] as? Number)?.toLong() ?: 0L,
+                    disableStopDetection = map["disableStopDetection"] as? Boolean ?: false,
+                    disableMotionActivityUpdates = map["disableMotionActivityUpdates"] as? Boolean ?: false,
+                    useSignificantChangesOnly = map["useSignificantChangesOnly"] as? Boolean ?: false,
+                    heartbeatInterval = (map["heartbeatInterval"] as? Number)?.toLong() ?: 0L,
+                    activityRecognitionInterval = (map["activityRecognitionInterval"] as? Number)?.toLong() ?: 10_000L,
+                    minimumActivityRecognitionConfidence = (map["minimumActivityRecognitionConfidence"] as? Number)?.toInt() ?: 75,
+                    maxDaysToPersist = (map["maxDaysToPersist"] as? Number)?.toInt() ?: 7,
+                    maxRecordsToPersist = (map["maxRecordsToPersist"] as? Number)?.toInt() ?: 10_000,
+                    persistLocations = map["persistLocations"] as? Boolean ?: true,
+                    preventSuspend = map["preventSuspend"] as? Boolean ?: false,
+                )
             } catch (e: Exception) {
                 null
             }
@@ -160,9 +215,6 @@ data class TrackingConfig(
         fun isTrackingEnabled(context: Context): Boolean =
             getPrefs(context).getBoolean(KEY_TRACKING_ENABLED, false)
 
-        /**
-         * Clears all persisted configuration.
-         */
         fun clear(context: Context) {
             getPrefs(context).edit().clear().apply()
         }

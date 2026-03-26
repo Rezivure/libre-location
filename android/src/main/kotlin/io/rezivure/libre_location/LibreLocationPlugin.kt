@@ -23,19 +23,6 @@ import io.flutter.plugin.common.PluginRegistry
 /**
  * LibreLocationPlugin — Production-grade Flutter plugin for background location
  * tracking using pure AOSP LocationManager. Zero Google Play Services dependencies.
- *
- * Supports:
- * - Foreground service with configurable notification
- * - Activity recognition (accelerometer-based)
- * - Motion change detection with configurable thresholds
- * - Heartbeat emissions (guaranteed periodic updates)
- * - Dynamic config changes via setConfig()
- * - getCurrentPosition with multi-sample averaging, timeout, maximumAge
- * - Provider change detection (GPS on/off)
- * - Boot receiver for auto-restart
- * - Headless mode (background execution after app termination)
- * - Local SQLite persistence for location buffering
- * - Android 12-14+ compatibility
  */
 class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     PluginRegistry.RequestPermissionsResultListener {
@@ -52,6 +39,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     private lateinit var motionEventChannel: EventChannel
     private lateinit var activityEventChannel: EventChannel
     private lateinit var providerEventChannel: EventChannel
+    private lateinit var heartbeatEventChannel: EventChannel
 
     private lateinit var context: Context
     private var activity: Activity? = null
@@ -62,11 +50,12 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     private var geofenceManager: GeofenceManager? = null
     private var locationDatabase: LocationDatabase? = null
 
-    private var positionStreamHandler: PositionStreamHandler? = null
-    private var geofenceStreamHandler: GeofenceStreamHandler? = null
+    private var positionStreamHandler: GenericStreamHandler? = null
+    private var geofenceStreamHandler: GenericStreamHandler? = null
     private var motionStreamHandler: GenericStreamHandler? = null
     private var activityStreamHandler: GenericStreamHandler? = null
     private var providerStreamHandler: GenericStreamHandler? = null
+    private var heartbeatStreamHandler: GenericStreamHandler? = null
 
     private var currentConfig: TrackingConfig? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -78,48 +67,55 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         channel = MethodChannel(binding.binaryMessenger, "libre_location")
         channel.setMethodCallHandler(this)
 
-        // Position event channel
-        positionStreamHandler = PositionStreamHandler()
+        // EventChannel names MUST match Dart side exactly
+        positionStreamHandler = GenericStreamHandler()
         positionEventChannel = EventChannel(binding.binaryMessenger, "libre_location/position")
         positionEventChannel.setStreamHandler(positionStreamHandler)
 
-        // Geofence event channel
-        geofenceStreamHandler = GeofenceStreamHandler()
+        geofenceStreamHandler = GenericStreamHandler()
         geofenceEventChannel = EventChannel(binding.binaryMessenger, "libre_location/geofence")
         geofenceEventChannel.setStreamHandler(geofenceStreamHandler)
 
-        // Motion change event channel
         motionStreamHandler = GenericStreamHandler()
-        motionEventChannel = EventChannel(binding.binaryMessenger, "libre_location/motion")
+        motionEventChannel = EventChannel(binding.binaryMessenger, "libre_location/motionChange")
         motionEventChannel.setStreamHandler(motionStreamHandler)
 
-        // Activity change event channel
         activityStreamHandler = GenericStreamHandler()
-        activityEventChannel = EventChannel(binding.binaryMessenger, "libre_location/activity")
+        activityEventChannel = EventChannel(binding.binaryMessenger, "libre_location/activityChange")
         activityEventChannel.setStreamHandler(activityStreamHandler)
 
-        // Provider change event channel
         providerStreamHandler = GenericStreamHandler()
-        providerEventChannel = EventChannel(binding.binaryMessenger, "libre_location/provider")
+        providerEventChannel = EventChannel(binding.binaryMessenger, "libre_location/providerChange")
         providerEventChannel.setStreamHandler(providerStreamHandler)
+
+        heartbeatStreamHandler = GenericStreamHandler()
+        heartbeatEventChannel = EventChannel(binding.binaryMessenger, "libre_location/heartbeat")
+        heartbeatEventChannel.setStreamHandler(heartbeatStreamHandler)
 
         // Initialize components
         locationDatabase = LocationDatabase(context)
 
-        locationManagerWrapper = LocationManagerWrapper(context) { position ->
-            mainHandler.post {
-                positionStreamHandler?.send(position)
+        locationManagerWrapper = LocationManagerWrapper(context,
+            onPosition = { position ->
+                mainHandler.post {
+                    positionStreamHandler?.send(position)
 
-                // Persist if configured
-                if (currentConfig?.persistLocations == true) {
-                    try {
-                        locationDatabase?.insertLocationMap(position)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to persist location: ${e.message}")
+                    // Persist if configured
+                    if (currentConfig?.persistLocations == true) {
+                        try {
+                            locationDatabase?.insertLocationMap(position)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to persist location: ${e.message}")
+                        }
                     }
                 }
-            }
-        }
+            },
+            onHeartbeat = { heartbeat ->
+                mainHandler.post {
+                    heartbeatStreamHandler?.send(heartbeat)
+                }
+            },
+        )
 
         locationManagerWrapper?.setProviderChangeCallback { providerState ->
             mainHandler.post {
@@ -148,6 +144,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         motionEventChannel.setStreamHandler(null)
         activityEventChannel.setStreamHandler(null)
         providerEventChannel.setStreamHandler(null)
+        heartbeatEventChannel.setStreamHandler(null)
 
         // Only stop if stopOnTerminate is true
         if (currentConfig?.stopOnTerminate != false) {
@@ -249,19 +246,29 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                         } else {
                             locationManagerWrapper?.onStillnessDetected()
                         }
-                        motionStreamHandler?.send(mapOf(
-                            "isMoving" to isMoving,
-                            "timestamp" to System.currentTimeMillis(),
-                        ))
+                        // Emit motion change as Position map (Dart motionChangeStream is Stream<Position>)
+                        val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
+                            ?: mutableMapOf(
+                                "latitude" to 0.0,
+                                "longitude" to 0.0,
+                                "altitude" to 0.0,
+                                "accuracy" to 0.0,
+                                "speed" to 0.0,
+                                "heading" to 0.0,
+                                "timestamp" to System.currentTimeMillis(),
+                                "provider" to "unknown",
+                            )
+                        positionMap["isMoving"] = isMoving
+                        motionStreamHandler?.send(positionMap)
                     }
                 },
                 onActivityChanged = { type, confidence ->
                     if (confidence >= config.minimumActivityRecognitionConfidence) {
                         mainHandler.post {
+                            // Key must be "activity" not "type" — matches Dart ActivityEvent.fromMap()
                             activityStreamHandler?.send(mapOf(
-                                "type" to type,
+                                "activity" to type,
                                 "confidence" to confidence,
-                                "timestamp" to System.currentTimeMillis(),
                             ))
                         }
                     }
@@ -299,7 +306,9 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         val args = call.arguments as? Map<*, *>
         val accuracy = args?.get("accuracy") as? Int ?: 0
         val samples = args?.get("samples") as? Int ?: 1
-        val timeoutMs = (args?.get("timeout") as? Number)?.toLong() ?: 30_000L
+        // Dart sends timeout in seconds
+        val timeoutSec = (args?.get("timeout") as? Number)?.toLong() ?: 30L
+        val timeoutMs = timeoutSec * 1000L
         val maximumAgeMs = (args?.get("maximumAge") as? Number)?.toLong() ?: 0L
         val persist = args?.get("persist") as? Boolean ?: false
 
@@ -425,11 +434,17 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     // ----- Permissions -----
 
     private fun checkPermissionStatus(): Int {
+        // Returns int matching Dart LocationPermission enum:
+        // 0 = denied, 1 = deniedForever, 2 = whileInUse, 3 = always
         val fineGranted = ContextCompat.checkSelfPermission(
             context, android.Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (!fineGranted) return 0 // denied
+        if (!fineGranted) {
+            // Check if permanently denied (shouldShowRequestPermissionRationale returns false
+            // when permanently denied, but also when never asked — we can't distinguish without activity)
+            return 0 // denied
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val bgGranted = ContextCompat.checkSelfPermission(
@@ -455,18 +470,15 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!fineGranted) {
-            // Request foreground location first
             val permissions = mutableListOf(
                 android.Manifest.permission.ACCESS_FINE_LOCATION,
                 android.Manifest.permission.ACCESS_COARSE_LOCATION,
             )
-            // On Android 10, we can bundle background with foreground
             if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
                 permissions.add(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
             }
             ActivityCompat.requestPermissions(act, permissions.toTypedArray(), PERMISSION_REQUEST_CODE)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Foreground already granted; request background separately (Android 11+)
             val bgGranted = ContextCompat.checkSelfPermission(
                 context, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
@@ -526,28 +538,33 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     override fun onDetachedFromActivity() { activity = null }
 }
 
-// ----- Stream Handlers -----
+// ----- Stream Handler -----
 
-/** EventChannel stream handler for position updates. */
-class PositionStreamHandler : EventChannel.StreamHandler {
-    private var eventSink: EventChannel.EventSink? = null
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { eventSink = events }
-    override fun onCancel(arguments: Any?) { eventSink = null }
-    fun send(position: Map<String, Any?>) { eventSink?.success(position) }
-}
-
-/** EventChannel stream handler for geofence events. */
-class GeofenceStreamHandler : EventChannel.StreamHandler {
-    private var eventSink: EventChannel.EventSink? = null
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { eventSink = events }
-    override fun onCancel(arguments: Any?) { eventSink = null }
-    fun send(event: Map<String, Any?>) { eventSink?.success(event) }
-}
-
-/** Generic EventChannel stream handler for motion, activity, provider events. */
+/** Generic EventChannel stream handler with event buffering. */
 class GenericStreamHandler : EventChannel.StreamHandler {
     private var eventSink: EventChannel.EventSink? = null
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { eventSink = events }
-    override fun onCancel(arguments: Any?) { eventSink = null }
-    fun send(data: Map<String, Any?>) { eventSink?.success(data) }
+    private val pendingEvents = mutableListOf<Any>()
+    private val maxPending = 100
+
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        eventSink = events
+        // Flush pending events
+        for (event in pendingEvents) {
+            events?.success(event)
+        }
+        pendingEvents.clear()
+    }
+
+    override fun onCancel(arguments: Any?) {
+        eventSink = null
+    }
+
+    fun send(data: Any) {
+        val sink = eventSink
+        if (sink != null) {
+            sink.success(data)
+        } else if (pendingEvents.size < maxPending) {
+            pendingEvents.add(data)
+        }
+    }
 }
