@@ -35,6 +35,9 @@ class LocationManagerWrapper(
     private var maxAccuracy: Float = 100f
     private var maxSpeed: Float = 83.33f // ~300 km/h
 
+    // Kalman filter for GPS smoothing
+    private val kalmanFilter = KalmanFilter()
+
     private val locationManager: LocationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val handler = Handler(Looper.getMainLooper())
@@ -114,6 +117,7 @@ class LocationManagerWrapper(
         this.config = config
         isTracking = true
         isMoving = true
+        kalmanFilter.reset()
         locationFilterEnabled = config.locationFilterEnabled
         maxAccuracy = config.maxAccuracy
         maxSpeed = config.maxSpeed
@@ -399,16 +403,47 @@ class LocationManagerWrapper(
             }
         }
 
-        lastEmittedLocation = location
-        lastEmittedTime = location.time
-        cachedLocation = location
+        // Apply Kalman filter for GPS smoothing (if filtering enabled)
+        val smoothed = if (locationFilterEnabled) {
+            // Reset if accuracy changed dramatically (>5x)
+            kalmanFilter.lastAccuracy?.let { lastAcc ->
+                if (lastAcc > 0 && location.accuracy > 0) {
+                    val ratio = location.accuracy / lastAcc
+                    if (ratio > 5.0f || ratio < 0.2f) {
+                        kalmanFilter.reset()
+                    }
+                }
+            }
+
+            kalmanFilter.process(
+                location.latitude,
+                location.longitude,
+                location.accuracy.toDouble(),
+                location.time / 1000.0
+            )
+
+            if (kalmanFilter.lat != null) {
+                Location(location).apply {
+                    latitude = kalmanFilter.lat!!
+                    longitude = kalmanFilter.lng!!
+                }
+            } else {
+                location
+            }
+        } else {
+            location
+        }
+
+        lastEmittedLocation = smoothed
+        lastEmittedTime = smoothed.time
+        cachedLocation = smoothed
 
         // Notify location update listeners (e.g., GeofenceManager for distance-based checking)
         for (listener in locationUpdateListeners) {
-            listener(location)
+            listener(smoothed)
         }
 
-        val map = locationToMap(location).toMutableMap()
+        val map = locationToMap(smoothed).toMutableMap()
         map["isMoving"] = isMoving
 
         onPosition(map)
@@ -559,5 +594,65 @@ class LocationManagerWrapper(
         }
 
         return map
+    }
+
+    // ----- Kalman Filter -----
+
+    /**
+     * Simple 1D Kalman filter applied independently to latitude and longitude.
+     * Smooths GPS jitter while preserving real movement.
+     */
+    private class KalmanFilter {
+        var lat: Double? = null
+            private set
+        var lng: Double? = null
+            private set
+        var lastAccuracy: Float? = null
+            private set
+
+        private var variance: Double = 0.0
+        private var lastTimestamp: Double = 0.0
+
+        /** Process noise in m²/s — higher = trusts new readings more. */
+        private val processNoise: Double = 3.0
+
+        fun process(lat: Double, lng: Double, accuracy: Double, timestampSec: Double) {
+            if (accuracy <= 0) return
+
+            if (this.lat == null) {
+                this.lat = lat
+                this.lng = lng
+                this.variance = accuracy * accuracy
+                this.lastTimestamp = timestampSec
+                this.lastAccuracy = accuracy.toFloat()
+                return
+            }
+
+            // Add process noise based on time elapsed
+            val timeDelta = maxOf(0.0, timestampSec - lastTimestamp)
+            variance += timeDelta * processNoise
+
+            // Kalman gain
+            val measurementVariance = accuracy * accuracy
+            val K = variance / (variance + measurementVariance)
+
+            // Update estimates
+            this.lat = this.lat!! + K * (lat - this.lat!!)
+            this.lng = this.lng!! + K * (lng - this.lng!!)
+
+            // Update variance
+            this.variance = (1.0 - K) * variance
+
+            this.lastTimestamp = timestampSec
+            this.lastAccuracy = accuracy.toFloat()
+        }
+
+        fun reset() {
+            lat = null
+            lng = null
+            variance = 0.0
+            lastTimestamp = 0.0
+            lastAccuracy = null
+        }
     }
 }
