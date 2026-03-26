@@ -125,6 +125,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         self.onHeartbeat = onHeartbeat
         super.init()
         locationManager.delegate = self
+        // Enable battery monitoring so we can include level/charging in every position
+        UIDevice.current.isBatteryMonitoringEnabled = true
     }
 
     // MARK: - App Termination Recovery
@@ -665,7 +667,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // MARK: - Helpers
 
     func locationToMap(_ location: CLLocation) -> [String: Any] {
-        return [
+        var map: [String: Any] = [
             "latitude": location.coordinate.latitude,
             "longitude": location.coordinate.longitude,
             "altitude": location.altitude,
@@ -676,5 +678,24 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             "provider": "core_location",
             "isMoving": isMoving,
         ]
+
+        // Battery info — UIDevice battery monitoring must be enabled (done in init)
+        let device = UIDevice.current
+        if device.isBatteryMonitoringEnabled {
+            let level = device.batteryLevel  // 0.0–1.0, or -1.0 if unknown
+            if level >= 0 {
+                map["batteryLevel"] = Int(level * 100)
+            }
+            let charging: Bool
+            switch device.batteryState {
+            case .charging, .full:
+                charging = true
+            default:
+                charging = false
+            }
+            map["isCharging"] = charging
+        }
+
+        return map
     }
 }

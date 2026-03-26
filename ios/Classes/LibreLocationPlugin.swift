@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import BackgroundTasks
 
 /// Flutter plugin for production-grade background location tracking on iOS.
 ///
@@ -33,6 +34,10 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
     private var activityStreamHandler: StreamHandler?
     private var motionChangeStreamHandler: StreamHandler?
     private var heartbeatStreamHandler: StreamHandler?
+
+    // BGTaskScheduler
+    static let bgTaskIdentifier = "io.rezivure.libre_location.heartbeat"
+    private static var heartbeatIntervalForBG: TimeInterval = 0
 
     // Logging
     static var enableLogging = false
@@ -132,7 +137,65 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         registrar.addMethodCallDelegate(instance, channel: channel)
         registrar.addApplicationDelegate(instance)
 
+        // Register BGAppRefreshTask for background heartbeat (iOS 13+).
+        // The host app must add "io.rezivure.libre_location.heartbeat" to
+        // BGTaskSchedulerPermittedIdentifiers in Info.plist.
+        if #available(iOS 13.0, *) {
+            BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: bgTaskIdentifier,
+                using: nil
+            ) { task in
+                guard let refreshTask = task as? BGAppRefreshTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                instance.handleBGHeartbeat(task: refreshTask)
+            }
+        }
+
         log("Plugin registered")
+    }
+
+    // MARK: - BGTaskScheduler Heartbeat
+
+    @available(iOS 13.0, *)
+    static func scheduleBGHeartbeat(interval: TimeInterval) {
+        heartbeatIntervalForBG = interval
+        guard interval > 0 else { return }
+
+        let request = BGAppRefreshTaskRequest(identifier: bgTaskIdentifier)
+        // earliestBeginDate is a hint; system decides actual timing
+        request.earliestBeginDate = Date(timeIntervalSinceNow: interval)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            log("BGAppRefreshTask scheduled (earliest: \(interval)s)")
+        } catch {
+            log("Failed to schedule BGAppRefreshTask: \(error.localizedDescription)")
+        }
+    }
+
+    @available(iOS 13.0, *)
+    private func handleBGHeartbeat(task: BGAppRefreshTask) {
+        Self.log("BGAppRefreshTask fired — emitting heartbeat location")
+
+        // Set expiration handler
+        task.expirationHandler = {
+            task.setTaskCompleted(success: false)
+        }
+
+        // Get current location and emit on heartbeat channel
+        locationService?.getCurrentPosition(accuracy: 1, samples: 1, timeout: 15, maximumAge: 60000) { [weak self] position in
+            if position["error"] == nil {
+                let heartbeatData: [String: Any] = ["position": position]
+                self?.heartbeatStreamHandler?.send(heartbeatData)
+                // Also emit on position stream so it's captured
+                self?.positionStreamHandler?.send(position)
+            }
+            task.setTaskCompleted(success: position["error"] == nil)
+        }
+
+        // Re-schedule the next one
+        Self.scheduleBGHeartbeat(interval: Self.heartbeatIntervalForBG)
     }
 
     // MARK: - Method Call Handler
@@ -183,6 +246,13 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 "useSignificantChangesOnly": useSignificantChangesOnly,
             ])
 
+            // Schedule BGTaskScheduler heartbeat for when app is suspended
+            if heartbeatInterval > 0 {
+                if #available(iOS 13.0, *) {
+                    Self.scheduleBGHeartbeat(interval: TimeInterval(heartbeatInterval))
+                }
+            }
+
             if enableMotion {
                 motionDetector?.start(
                     onMotionChanged: { [weak self] isMoving in
@@ -203,6 +273,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         case "stopTracking":
             locationService?.stopTracking()
             motionDetector?.stop()
+            if #available(iOS 13.0, *) {
+                BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.bgTaskIdentifier)
+            }
             result(nil)
 
         case "isTracking":
