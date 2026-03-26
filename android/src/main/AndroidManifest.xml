@@ -1,20 +1,63 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.rezivure.libre_location">
 
+    <!-- Core location permissions -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground service (Android 9+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Notifications (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Boot receiver -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Wake lock for preventSuspend -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Exact alarms for heartbeat (Android 12+) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <!-- Activity recognition (if using system API) -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!-- Vibration for notifications -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application>
+        <!-- Foreground location service -->
         <service
             android:name=".LocationService"
+            android:enabled="true"
+            android:exported="false"
             android:foregroundServiceType="location"
+            android:stopWithTask="false" />
+
+        <!-- Boot completed receiver for startOnBoot -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Heartbeat alarm receiver for Doze-resistant periodic wakeups -->
+        <receiver
+            android:name=".HeartbeatAlarmReceiver"
+            android:enabled="true"
             android:exported="false" />
 
+        <!-- Geofence broadcast receiver -->
         <receiver
             android:name=".GeofenceBroadcastReceiver"
             android:exported="false" />
