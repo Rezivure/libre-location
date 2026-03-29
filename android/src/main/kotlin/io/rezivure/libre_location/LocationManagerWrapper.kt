@@ -28,6 +28,7 @@ class LocationManagerWrapper(
     companion object {
         private const val TAG = "LibreLocationMgr"
         private const val DUPLICATE_TIME_THRESHOLD = 1000L
+        private const val GATE_CHECK_COOLDOWN_MS = 60_000L
     }
 
     // GPS filter config
@@ -53,6 +54,12 @@ class LocationManagerWrapper(
     private var lastEmittedTime: Long = 0L
     private var cachedLocation: Location? = null
 
+    // Motion change tracking — allows first emission after motion state change to bypass time filter
+    private var motionChangeOccurred = false
+
+    // Cooldown for distance gate checks to prevent indoor motion spam
+    private var lastGateCheckTime: Long = 0
+
     private var providerChangeCallback: ((Map<String, Any?>) -> Unit)? = null
     private var locationUpdateListeners = mutableListOf<(Location) -> Unit>()
     private var lastProviderState = mutableMapOf<String, Boolean>()
@@ -60,6 +67,28 @@ class LocationManagerWrapper(
     private var heartbeatRunnable: Runnable? = null
 
     private val activeListeners = CopyOnWriteArrayList<LocationListener>()
+
+    // ----- Stop Detection State Machine -----
+    // GPS-speed-only: when speed < 0.5 m/s for stillnessTimeoutMs, transition to stationary.
+    private var stopDetectionTimer: Runnable? = null
+    private var lastMovementTime: Long = 0L  // last time speed > 0.5 m/s
+
+    // ----- Home Geofence (stationary mode) -----
+    private var homeGeofenceCenter: Location? = null
+    private var homeGeofenceRadius: Float = 150f
+
+    private val PREFS_NAME = "libre_location_home"
+    private val PREF_HOME_LAT = "home_lat"
+    private val PREF_HOME_LNG = "home_lng"
+    private val PREF_HOME_RADIUS = "home_radius"
+    private val PREF_HOME_TIME = "home_time"
+
+    /** Callback invoked when the wrapper's own isMoving state changes. */
+    private var motionStateCallback: ((Boolean) -> Unit)? = null
+
+    fun setMotionStateCallback(callback: (Boolean) -> Unit) {
+        motionStateCallback = callback
+    }
 
     // ----- Primary Location Listener -----
 
@@ -117,26 +146,38 @@ class LocationManagerWrapper(
         this.config = config
         isTracking = true
         isMoving = true
+        lastGateCheckTime = 0
         kalmanFilter.reset()
         locationFilterEnabled = config.locationFilterEnabled
         maxAccuracy = config.maxAccuracy
         maxSpeed = config.maxSpeed
 
-        registerProviders()
+        // Check for persisted home point (process death recovery)
+        restoreHomeIfNeeded()
+
+        if (isMoving) {
+            registerProviders()
+            lastMovementTime = System.currentTimeMillis()
+            restartStopDetectionTimer()
+        }
         startHeartbeat()
         startProviderMonitoring()
 
-        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}, filter=$locationFilterEnabled")
+        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}, filter=$locationFilterEnabled, isMoving=$isMoving")
     }
 
     fun stopTracking() {
         isTracking = false
+        cancelStopDetectionTimer()
+        homeGeofenceCenter = null
         locationManager.removeUpdates(primaryListener)
         locationManager.removeUpdates(secondaryListener)
+        locationManager.removeUpdates(passiveListener)
         activeListeners.forEach { locationManager.removeUpdates(it) }
         activeListeners.clear()
         stopHeartbeat()
         handler.removeCallbacks(providerCheckRunnable)
+        clearPersistedHome()
         Log.d(TAG, "Tracking stopped")
     }
 
@@ -246,25 +287,40 @@ class LocationManagerWrapper(
 
     // ----- Motion State -----
 
+    /**
+     * Called when accelerometer detects motion while stationary.
+     * Instead of directly waking GPS, requests a single network location
+     * and checks distance from home point (distance gate).
+     */
     @SuppressLint("MissingPermission")
-    fun onMotionDetected() {
+    fun onMotionDetectedGated() {
         if (!isTracking) return
-        val wasStationary = !isMoving
-        isMoving = true
+        if (isMoving) return  // already moving, no-op
 
-        if (wasStationary && config.mode == 1) {
-            try {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    config.intervalMs,
-                    config.distanceFilter,
-                    primaryListener,
-                    Looper.getMainLooper()
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to re-engage GPS: ${e.message}")
+        val now = System.currentTimeMillis()
+        if (now - lastGateCheckTime < GATE_CHECK_COOLDOWN_MS) {
+            Log.d(TAG, "Motion gate cooldown active — ignoring (${now - lastGateCheckTime}ms since last check)")
+            return
+        }
+        lastGateCheckTime = now
+
+        Log.d(TAG, "Motion detected (gated) — requesting network location for distance check")
+
+        requestSingleNetworkLocation { location ->
+            if (!isTracking || isMoving) return@requestSingleNetworkLocation
+            if (location != null) {
+                checkDistanceFromHome(location)
+            } else {
+                // Network unavailable — check age of last known location
+                val lastTime = lastEmittedLocation?.time ?: 0L
+                val age = System.currentTimeMillis() - lastTime
+                if (age > 30 * 60 * 1000) { // 30 min stale
+                    Log.d(TAG, "Network unavailable, last location stale (${age}ms) — transitioning to MOVING")
+                    transitionToMoving()
+                } else {
+                    Log.d(TAG, "Network unavailable but last location fresh — staying STATIONARY")
+                }
             }
-            Log.d(TAG, "Motion detected — GPS re-engaged")
         }
     }
 
@@ -273,26 +329,214 @@ class LocationManagerWrapper(
      */
     fun setMoving(moving: Boolean) {
         if (!isTracking) return
+        cancelStopDetectionTimer()
         if (moving) {
-            onMotionDetected()
+            if (!isMoving) transitionToMoving()
         } else {
-            val wasMoving = isMoving
-            isMoving = false
-            if (wasMoving && config.mode == 1) {
-                locationManager.removeUpdates(primaryListener)
-                Log.d(TAG, "setMoving: forced stationary — GPS paused")
+            if (isMoving) transitionToStationary()
+        }
+    }
+
+    // ----- State Transitions -----
+
+    @SuppressLint("MissingPermission")
+    fun transitionToStationary() {
+        isMoving = false
+        Log.d(TAG, "Transitioning to STATIONARY — stopping GPS, recording home point")
+
+        // Record home point
+        homeGeofenceCenter = lastEmittedLocation?.let { Location(it) }
+        homeGeofenceRadius = config.stillnessRadiusMeters
+
+        // Stop GPS, keep passive
+        locationManager.removeUpdates(primaryListener)
+        locationManager.removeUpdates(secondaryListener)
+        requestUpdatesIfAvailable(LocationManager.PASSIVE_PROVIDER, passiveListener)
+
+        // Persist home point for process death recovery
+        persistHome()
+
+        cancelStopDetectionTimer()
+        motionStateCallback?.invoke(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun transitionToMoving() {
+        isMoving = true
+        homeGeofenceCenter = null
+        motionChangeOccurred = true
+        lastGateCheckTime = 0
+        Log.d(TAG, "Transitioning to MOVING — re-engaging GPS")
+
+        // Remove passive listener
+        locationManager.removeUpdates(passiveListener)
+
+        // Clear persisted home
+        clearPersistedHome()
+
+        // Re-engage GPS
+        registerProviders()
+
+        // Reset stop detection
+        lastMovementTime = System.currentTimeMillis()
+        restartStopDetectionTimer()
+
+        motionStateCallback?.invoke(true)
+    }
+
+    // ----- Distance Check -----
+
+    private fun checkDistanceFromHome(location: Location) {
+        val home = homeGeofenceCenter ?: return
+        val distance = location.distanceTo(home)
+        if (distance > homeGeofenceRadius) {
+            Log.d(TAG, "Distance from home: ${distance}m > ${homeGeofenceRadius}m — transitioning to MOVING")
+            transitionToMoving()
+        } else {
+            Log.v(TAG, "Distance from home: ${distance}m ≤ ${homeGeofenceRadius}m — staying STATIONARY")
+        }
+    }
+
+    // ----- Network Location Request -----
+
+    @SuppressLint("MissingPermission")
+    private fun requestSingleNetworkLocation(callback: (Location?) -> Unit) {
+        var completed = false
+        try {
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    if (completed) return
+                    completed = true
+                    locationManager.removeUpdates(this)
+                    callback(location)
+                }
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {
+                    if (completed) return
+                    completed = true
+                    locationManager.removeUpdates(this)
+                    callback(null)
+                }
+                @Deprecated("Deprecated in API")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            }
+            locationManager.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+            )
+            // Timeout after 10s
+            handler.postDelayed({
+                if (completed) return@postDelayed
+                completed = true
+                locationManager.removeUpdates(listener)
+                val lastKnown = try {
+                    locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                } catch (_: SecurityException) { null }
+                callback(lastKnown)
+            }, 10_000L)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request network location: ${e.message}")
+            if (!completed) {
+                completed = true
+                callback(null)
             }
         }
     }
 
-    fun onStillnessDetected() {
-        if (!isTracking) return
-        val wasMoving = isMoving
+    // ----- Stop Detection Timer (GPS-speed-only) -----
+
+    /**
+     * Called from processLocation when speed data is available.
+     * Resets lastMovementTime when speed > 0.5 m/s.
+     */
+    private fun updateStopDetection(location: Location) {
+        if (!isMoving || !isTracking) return
+        if (location.hasSpeed() && location.speed > 0.5f) {
+            lastMovementTime = System.currentTimeMillis()
+        }
+    }
+
+    private fun restartStopDetectionTimer() {
+        cancelStopDetectionTimer()
+        val timeoutMs = config.stillnessTimeoutMs
+        val runnable = Runnable { checkStopDetection() }
+        stopDetectionTimer = runnable
+        handler.postDelayed(runnable, timeoutMs)
+    }
+
+    private fun checkStopDetection() {
+        if (!isTracking || !isMoving) return
+        val elapsed = System.currentTimeMillis() - lastMovementTime
+        val timeoutMs = config.stillnessTimeoutMs
+        if (elapsed >= timeoutMs) {
+            Log.d(TAG, "Stop detection: no movement for ${elapsed}ms — transitioning to STATIONARY")
+            transitionToStationary()
+        } else {
+            // Reschedule for remaining time
+            val remaining = timeoutMs - elapsed
+            val runnable = Runnable { checkStopDetection() }
+            stopDetectionTimer = runnable
+            handler.postDelayed(runnable, remaining)
+        }
+    }
+
+    private fun cancelStopDetectionTimer() {
+        stopDetectionTimer?.let {
+            handler.removeCallbacks(it)
+            stopDetectionTimer = null
+        }
+    }
+
+    // ----- Home Point Persistence -----
+
+    private fun persistHome() {
+        val home = homeGeofenceCenter ?: return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putLong(PREF_HOME_LAT, java.lang.Double.doubleToRawLongBits(home.latitude))
+            .putLong(PREF_HOME_LNG, java.lang.Double.doubleToRawLongBits(home.longitude))
+            .putFloat(PREF_HOME_RADIUS, homeGeofenceRadius)
+            .putLong(PREF_HOME_TIME, home.time)
+            .apply()
+    }
+
+    private fun clearPersistedHome() {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().apply()
+    }
+
+    /**
+     * Restores home point from SharedPreferences after process death.
+     * Called during startTracking if a persisted home exists.
+     */
+    @SuppressLint("MissingPermission")
+    private fun restoreHomeIfNeeded() {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(PREF_HOME_TIME)) return
+
+        val lat = java.lang.Double.longBitsToDouble(prefs.getLong(PREF_HOME_LAT, 0L))
+        val lng = java.lang.Double.longBitsToDouble(prefs.getLong(PREF_HOME_LNG, 0L))
+        val radius = prefs.getFloat(PREF_HOME_RADIUS, 150f)
+        val time = prefs.getLong(PREF_HOME_TIME, 0L)
+
+        if (lat == 0.0 && lng == 0.0) return
+
+        val home = Location("restored").apply {
+            latitude = lat
+            longitude = lng
+            this.time = time
+        }
+        homeGeofenceCenter = home
+        homeGeofenceRadius = radius
         isMoving = false
 
-        if (wasMoving && config.mode == 1) {
-            locationManager.removeUpdates(primaryListener)
-            Log.d(TAG, "Stillness detected — GPS paused (network only)")
+        // Register passive provider
+        requestUpdatesIfAvailable(LocationManager.PASSIVE_PROVIDER, passiveListener)
+
+        Log.d(TAG, "Restored home point from SharedPreferences: ($lat, $lng) radius=${radius}m")
+
+        // Check if we've moved since process death
+        requestSingleNetworkLocation { location ->
+            if (location != null) checkDistanceFromHome(location)
         }
     }
 
@@ -371,15 +615,6 @@ class LocationManagerWrapper(
                         Log.v(TAG, "Filtered: implied speed ${impliedSpeed}m/s > ${maxSpeed}m/s")
                         return
                     }
-
-                    // Distance filter: don't emit if distance < distanceFilter
-                    if (distance < config.distanceFilter) {
-                        // Smoothing: if within accuracy radius, weight toward previous
-                        if (distance < location.accuracy) {
-                            Log.v(TAG, "Filtered: within accuracy radius (${distance}m < ${location.accuracy}m)")
-                        }
-                        return
-                    }
                 }
 
                 // Duplicate time threshold
@@ -434,9 +669,36 @@ class LocationManagerWrapper(
             location
         }
 
+        // Software distance filter (post-Kalman): enforce distanceFilter as hard limit
+        // Android's setSmallestDisplacement is respected better than iOS but add software backup
+        if (locationFilterEnabled) {
+            val last = lastEmittedLocation
+            if (last != null) {
+                val distance = smoothed.distanceTo(last)
+                if (distance < config.distanceFilter) {
+                    Log.v(TAG, "Software distance filter: ${distance}m < ${config.distanceFilter}m")
+                    return
+                }
+            }
+
+            // Software time filter: enforce intervalMs as minimum emission interval
+            val isMotionChangeBypass = motionChangeOccurred && location.speed > 0
+            if (lastEmittedTime > 0 && !isMotionChangeBypass) {
+                val elapsedMs = location.time - lastEmittedTime
+                if (elapsedMs < config.intervalMs) {
+                    Log.v(TAG, "Software time filter: ${elapsedMs}ms < ${config.intervalMs}ms")
+                    return
+                }
+            }
+        }
+
         lastEmittedLocation = smoothed
         lastEmittedTime = smoothed.time
         cachedLocation = smoothed
+        motionChangeOccurred = false
+
+        // Feed stop detection (GPS-speed-only)
+        updateStopDetection(smoothed)
 
         // Notify location update listeners (e.g., GeofenceManager for distance-based checking)
         for (listener in locationUpdateListeners) {

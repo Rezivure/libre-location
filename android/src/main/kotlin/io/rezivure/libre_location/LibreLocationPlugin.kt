@@ -332,28 +332,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 val args = call.arguments as? Map<*, *>
                 val isMoving = args?.get("isMoving") as? Boolean ?: true
                 locationManagerWrapper?.setMoving(isMoving)
-                if (isMoving) {
-                    motionDetector?.let {
-                        // Force the detector's state
-                    }
-                    locationManagerWrapper?.onMotionDetected()
-                } else {
-                    locationManagerWrapper?.onStillnessDetected()
-                }
-                // Emit motion change event
-                val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                    ?: mutableMapOf<String, Any?>(
-                        "latitude" to 0.0,
-                        "longitude" to 0.0,
-                        "altitude" to 0.0,
-                        "accuracy" to 0.0,
-                        "speed" to 0.0,
-                        "heading" to 0.0,
-                        "timestamp" to System.currentTimeMillis(),
-                        "provider" to "unknown",
-                    )
-                positionMap["isMoving"] = isMoving
-                mainHandler.post { motionStreamHandler?.send(positionMap) }
+                // Motion state callback will emit the event to Dart via motionStreamHandler
                 result.success(null)
             }
 
@@ -444,6 +423,25 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         // Start location tracking
         locationManagerWrapper?.startTracking(config)
 
+        // Wire motion state callback — emits motion change events to Dart
+        locationManagerWrapper?.setMotionStateCallback { moving ->
+            mainHandler.post {
+                val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
+                    ?: mutableMapOf<String, Any?>(
+                        "latitude" to 0.0,
+                        "longitude" to 0.0,
+                        "altitude" to 0.0,
+                        "accuracy" to 0.0,
+                        "speed" to 0.0,
+                        "heading" to 0.0,
+                        "timestamp" to System.currentTimeMillis(),
+                        "provider" to "unknown",
+                    )
+                positionMap["isMoving"] = moving
+                motionStreamHandler?.send(positionMap)
+            }
+        }
+
         // Start motion detection if enabled
         if (config.enableMotionDetection && !config.skipActivityUpdates) {
             motionDetector?.updateConfig(config)
@@ -451,24 +449,13 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 onMotionChanged = { isMoving ->
                     mainHandler.post {
                         if (isMoving) {
-                            locationManagerWrapper?.onMotionDetected()
-                        } else {
-                            locationManagerWrapper?.onStillnessDetected()
+                            // Distance-gated: accelerometer wake triggers network location check,
+                            // NOT direct GPS engagement
+                            locationManagerWrapper?.onMotionDetectedGated()
                         }
-                        // Emit motion change as Position map (Dart motionChangeStream is Stream<Position>)
-                        val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                            ?: mutableMapOf<String, Any?>(
-                                "latitude" to 0.0,
-                                "longitude" to 0.0,
-                                "altitude" to 0.0,
-                                "accuracy" to 0.0,
-                                "speed" to 0.0,
-                                "heading" to 0.0,
-                                "timestamp" to System.currentTimeMillis(),
-                                "provider" to "unknown",
-                            )
-                        positionMap["isMoving"] = isMoving
-                        motionStreamHandler?.send(positionMap)
+                        // Note: stillness from accelerometer is ignored for state transitions.
+                        // Stop detection is GPS-speed-only via LocationManagerWrapper.
+                        // Motion change events are emitted by motionStateCallback, not here.
                     }
                 },
                 onActivityChanged = { type, confidence ->
@@ -634,20 +621,33 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
 
     // ----- Buffered Location Delivery -----
 
+    /**
+     * Delivers buffered locations in throttled batches of 50 with 100ms delay
+     * between batches to avoid overwhelming the Flutter event channel.
+     */
     private fun deliverBufferedLocations() {
         val db = locationDatabase ?: return
         val undelivered = db.getUndeliveredLocations(500)
         if (undelivered.isEmpty()) return
 
-        Log.d(TAG, "Delivering ${undelivered.size} buffered locations")
-        val ids = mutableListOf<Long>()
-        for (loc in undelivered) {
-            val id = loc["id"] as? Long
-            if (id != null) ids.add(id)
-            positionStreamHandler?.send(loc)
-        }
+        Log.d(TAG, "Delivering ${undelivered.size} buffered locations in throttled batches")
+
+        // Mark all as delivered upfront to avoid re-delivery
+        val ids = undelivered.mapNotNull { it["id"] as? Long }
         if (ids.isNotEmpty()) {
             db.markDelivered(ids)
+        }
+
+        // Send in batches of 50 with 100ms delay between batches
+        val batchSize = 50
+        val batches = undelivered.chunked(batchSize)
+        for ((index, batch) in batches.withIndex()) {
+            val delayMs = (index * 100).toLong()
+            mainHandler.postDelayed({
+                for (loc in batch) {
+                    positionStreamHandler?.send(loc)
+                }
+            }, delayMs)
         }
     }
 

@@ -13,7 +13,7 @@ final class LocationDatabase {
 
     // Maintenance constants
     private static let defaultMaxAgeDays = 7
-    private static let defaultMaxRecords = 10000
+    private static let defaultMaxRecords = 500
     private static let maintenanceInterval: TimeInterval = 3600 // 1 hour
 
     private var maintenanceTimer: Timer?
@@ -161,6 +161,16 @@ final class LocationDatabase {
 
         if sqlite3_step(stmt) != SQLITE_DONE {
             logError("insertLocation step")
+        }
+
+        // Enforce max record cap on every insert
+        _enforceMaxRecords()
+    }
+
+    private func _enforceMaxRecords() {
+        let count = _getCount()
+        if count > Self.defaultMaxRecords {
+            _deleteExcess(maxRecords: Self.defaultMaxRecords)
         }
     }
 

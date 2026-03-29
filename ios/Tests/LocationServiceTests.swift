@@ -18,8 +18,8 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertEqual(config.distanceFilter, 10.0)
         XCTAssertEqual(config.mode, 1)
         XCTAssertTrue(config.enableMotionDetection)
-        XCTAssertEqual(config.stopTimeout, 5)
-        XCTAssertEqual(config.stationaryRadius, 25.0)
+        XCTAssertEqual(config.stillnessTimeoutMin, 5)
+        XCTAssertEqual(config.stillnessRadiusMeters, 25.0)
         XCTAssertEqual(config.heartbeatInterval, 0)
         XCTAssertFalse(config.pausesLocationUpdatesAutomatically)
         XCTAssertEqual(config.activityType, 0)
@@ -36,7 +36,7 @@ final class LocationServiceConfigTests: XCTestCase {
         var config = LocationServiceConfig()
         config.accuracy = 2
         config.distanceFilter = 50.0
-        config.stopTimeout = 10
+        config.stillnessTimeoutMin = 10
         config.heartbeatInterval = 300
         config.keepAwake = true
         config.maxAccuracy = 200.0
@@ -47,7 +47,7 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.accuracy, 2)
         XCTAssertEqual(loaded?.distanceFilter, 50.0)
-        XCTAssertEqual(loaded?.stopTimeout, 10)
+        XCTAssertEqual(loaded?.stillnessTimeoutMin, 10)
         XCTAssertEqual(loaded?.heartbeatInterval, 300)
         XCTAssertTrue(loaded?.keepAwake ?? false)
         XCTAssertEqual(loaded?.maxAccuracy, 200.0)
@@ -75,8 +75,8 @@ final class LocationServiceConfigTests: XCTestCase {
         config.distanceFilter = 5.0
         config.mode = 2
         config.enableMotionDetection = false
-        config.stopTimeout = 15
-        config.stationaryRadius = 100.0
+        config.stillnessTimeoutMin = 15
+        config.stillnessRadiusMeters = 100.0
         config.heartbeatInterval = 600
         config.pausesLocationUpdatesAutomatically = true
         config.activityType = 2
@@ -95,8 +95,8 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertEqual(loaded.distanceFilter, 5.0)
         XCTAssertEqual(loaded.mode, 2)
         XCTAssertFalse(loaded.enableMotionDetection)
-        XCTAssertEqual(loaded.stopTimeout, 15)
-        XCTAssertEqual(loaded.stationaryRadius, 100.0)
+        XCTAssertEqual(loaded.stillnessTimeoutMin, 15)
+        XCTAssertEqual(loaded.stillnessRadiusMeters, 100.0)
         XCTAssertEqual(loaded.heartbeatInterval, 600)
         XCTAssertTrue(loaded.pausesLocationUpdatesAutomatically)
         XCTAssertEqual(loaded.activityType, 2)
@@ -107,45 +107,6 @@ final class LocationServiceConfigTests: XCTestCase {
         XCTAssertFalse(loaded.locationFilterEnabled)
         XCTAssertEqual(loaded.maxAccuracy, 500.0)
         XCTAssertEqual(loaded.maxSpeed, 150.0)
-    }
-}
-
-// MARK: - LocationBuffer Tests
-
-final class LocationBufferTests: XCTestCase {
-
-    override func tearDown() {
-        _ = LocationBuffer.flush()
-        super.tearDown()
-    }
-
-    func testAppendAndFlush() {
-        let loc: [String: Any] = [
-            "latitude": 37.42,
-            "longitude": -122.08,
-            "timestamp": 1000,
-        ]
-        LocationBuffer.append(loc)
-        let buffer = LocationBuffer.flush()
-        XCTAssertEqual(buffer.count, 1)
-        XCTAssertEqual(buffer[0]["latitude"] as? Double, 37.42)
-    }
-
-    func testFlushClearsBuffer() {
-        LocationBuffer.append(["latitude": 1.0, "longitude": 2.0])
-        _ = LocationBuffer.flush()
-        let empty = LocationBuffer.flush()
-        XCTAssertTrue(empty.isEmpty)
-    }
-
-    func testBufferMaxSize() {
-        for i in 0..<1100 {
-            LocationBuffer.append(["index": i])
-        }
-        let buffer = LocationBuffer.load()
-        XCTAssertEqual(buffer.count, 1000)
-        // Should keep the most recent 1000
-        XCTAssertEqual(buffer.first?["index"] as? Int, 100)
     }
 }
 
@@ -190,6 +151,142 @@ final class LocationToMapTests: XCTestCase {
         let map = service.locationToMap(location)
         XCTAssertEqual(map["speed"] as? Double, 0.0)
         XCTAssertEqual(map["heading"] as? Double, 0.0)
+    }
+}
+
+// MARK: - Stop Detection & State Machine Tests
+
+final class StopDetectionTests: XCTestCase {
+
+    func testOnStillnessDetectedIsNoOp() {
+        let service = LocationService(onPosition: { _ in })
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        XCTAssertTrue(service.isMoving)
+
+        // Accelerometer stillness should NOT affect state
+        service.onStillnessDetected()
+        XCTAssertTrue(service.isMoving, "onStillnessDetected should be a no-op")
+
+        service.stopTracking()
+    }
+
+    func testOnMotionDetectedDoesNotWakeGPS() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        // Force stationary via setMoving
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        // Accelerometer motion should NOT transition back to moving
+        service.onMotionDetected()
+        XCTAssertFalse(service.isMoving, "onMotionDetected should NOT wake GPS — accelerometer is ignored for state transitions")
+
+        service.stopTracking()
+    }
+
+    func testOnMotionDetectedNotTracking() {
+        let service = LocationService(onPosition: { _ in })
+        // Not tracking — should be safe no-op
+        service.onMotionDetected()
+        XCTAssertFalse(service.isTracking)
+    }
+
+    func testOnStillnessNotTracking() {
+        let service = LocationService(onPosition: { _ in })
+        service.onStillnessDetected()
+        XCTAssertFalse(service.isTracking)
+    }
+
+    func testSetMovingManualOverrideStillWorks() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.setMoving(moving: true)
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testSetMovingFalseFromMovingTransitionsToStationary() {
+        var motionEvents: [Bool] = []
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { data in
+                if let moving = data["isMoving"] as? Bool {
+                    motionEvents.append(moving)
+                }
+            }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        XCTAssertTrue(service.isMoving)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testSetMovingTrueFromStationaryTransitionsToMoving() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.setMoving(moving: true)
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testSetMovingNoOpWhenAlreadyInState() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        // Already moving — should be no-op
+        service.setMoving(moving: true)
+        XCTAssertTrue(service.isMoving)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        // Already stationary — should be no-op
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testApplyConfigResetsToMoving() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        // Re-start should reset to moving
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
     }
 }
 
