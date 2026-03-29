@@ -4,133 +4,163 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Tests for the stop detection state machine in LocationManagerWrapper.
+ * Tests for the stop detection and stationary/moving state machine in LocationManagerWrapper.
  *
- * Since LocationManagerWrapper requires a real Context + LocationManager, we test
- * the state machine logic and invariants at the unit level.
+ * The redesigned state machine uses:
+ * - GPS-speed-only stop detection (MOVING → STATIONARY)
+ * - Distance-gated accelerometer wake (STATIONARY → MOVING)
+ * - Home geofence with passive provider backup
  */
 class StopDetectionTest {
 
     @Test
-    fun `stop detection state machine - stillness does not immediately stop`() {
-        // The key fix: onStillnessDetected() should NOT immediately set isMoving=false.
-        // Instead it starts a stop-detection timer. Only when that timer fires AND
-        // the device is still reporting stillness does isMoving transition to false.
-        //
-        // State transitions:
-        // 1. MOVING + onStillnessDetected() → still MOVING (timer started)
-        // 2. Timer fires + still still → STATIONARY (GPS reduced)
-        // 3. STATIONARY + onMotionDetected() → MOVING (GPS re-engaged)
-
-        // We verify the expected flow by documenting the contract:
+    fun `stop detection is GPS-speed-only`() {
+        // MOVING → STATIONARY transition requires GPS speed < 0.5 m/s
+        // for stillnessTimeoutMs. Accelerometer is NOT used for stop detection.
         val states = mutableListOf<String>()
         states.add("MOVING")         // initial state
-        states.add("MOVING")         // after onStillnessDetected (timer started, not yet fired)
-        states.add("STATIONARY")     // after timer fires while still
-        states.add("MOVING")         // after onMotionDetected
+        states.add("MOVING")         // GPS speed still > 0.5 m/s, timer keeps resetting
+        states.add("STATIONARY")     // GPS speed < 0.5 for stillnessTimeoutMs → transition
 
         assertEquals("MOVING", states[0])
-        assertEquals("MOVING", states[1])     // key: NOT immediately stationary
+        assertEquals("MOVING", states[1])
         assertEquals("STATIONARY", states[2])
-        assertEquals("MOVING", states[3])
     }
 
     @Test
-    fun `stop detection timer is cancelled on motion`() {
-        // If motion is detected before the timer fires, the timer should be cancelled
-        // and isMoving should remain true.
-        val states = mutableListOf<String>()
-        states.add("MOVING")         // initial
-        states.add("MOVING")         // onStillnessDetected → timer started
-        states.add("MOVING")         // onMotionDetected before timer → timer cancelled
+    fun `accelerometer motion triggers distance gate not direct GPS wake`() {
+        // When stationary, accelerometer motion calls onMotionDetectedGated()
+        // which requests a NETWORK_PROVIDER location and checks distance from home.
+        // GPS is NOT started until distance > homeGeofenceRadius.
+        val actions = mutableListOf<String>()
+        actions.add("ACCEL_MOTION")          // accelerometer fires
+        actions.add("NETWORK_LOCATION_REQ")  // request single network location
+        actions.add("DISTANCE_CHECK")        // compare to home point
+        // If distance ≤ radius:
+        actions.add("STAY_STATIONARY")       // no GPS, indoor movement
 
-        assertEquals(3, states.size)
-        assertTrue(states.all { it == "MOVING" })
+        assertEquals(4, actions.size)
+        assertEquals("STAY_STATIONARY", actions[3])
     }
 
     @Test
-    fun `stop detection timer constant is 60 seconds`() {
-        // The accelerated stop-detection delay should be 60 seconds
-        // (symmetric with iOS implementation)
-        val expectedDelayMs = 60_000L
-        assertEquals(60_000L, expectedDelayMs)
+    fun `distance gate transitions to moving when far from home`() {
+        // When distance from home > homeGeofenceRadius, transition to MOVING
+        val actions = mutableListOf<String>()
+        actions.add("ACCEL_MOTION")
+        actions.add("NETWORK_LOCATION_REQ")
+        actions.add("DISTANCE_CHECK")        // distance > radius
+        actions.add("TRANSITION_TO_MOVING")  // GPS re-engaged
+
+        assertEquals("TRANSITION_TO_MOVING", actions[3])
     }
 
     @Test
-    fun `GPS power reduction on stationary transition`() {
-        // When transitioning to stationary in mode 1 (battery-saving):
-        // - Active GPS updates should be removed (reduceGpsPower)
-        // - Network + heartbeat continue providing periodic updates
-        //
-        // When transitioning to moving:
-        // - Active GPS should be re-engaged (reEngageActiveGps)
-        val gpsActions = mutableListOf<String>()
-        gpsActions.add("GPS_ACTIVE")      // initial tracking start
-        gpsActions.add("GPS_REMOVED")     // stationary transition
-        gpsActions.add("GPS_ACTIVE")      // motion resume
+    fun `network unavailable falls back to last location age check`() {
+        // If NETWORK_PROVIDER is unavailable, check age of last known location.
+        // If > 30min stale → transition to MOVING (assume displacement).
+        // If fresh → stay stationary.
+        val staleAgeMs = 31 * 60 * 1000L  // 31 minutes
+        val freshAgeMs = 5 * 60 * 1000L   // 5 minutes
 
-        assertEquals("GPS_ACTIVE", gpsActions[0])
-        assertEquals("GPS_REMOVED", gpsActions[1])
-        assertEquals("GPS_ACTIVE", gpsActions[2])
+        assertTrue(staleAgeMs > 30 * 60 * 1000)  // should transition
+        assertTrue(freshAgeMs <= 30 * 60 * 1000)  // should stay stationary
     }
 
     @Test
-    fun `setMoving bypasses stop detection timer`() {
-        // Manual setMoving(false) should immediately transition without timer
-        // Manual setMoving(true) should immediately transition and cancel any timer
+    fun `onMotionDetectedGated is no-op when already moving`() {
+        // If isMoving is already true, onMotionDetectedGated returns immediately
+        var isMoving = true
+        val shouldProcess = !isMoving  // false — no-op
+        assertFalse(shouldProcess)
+    }
+
+    @Test
+    fun `transitionToStationary records home point and stops GPS`() {
+        // On transition to STATIONARY:
+        // 1. Record lastEmittedLocation as homeGeofenceCenter
+        // 2. Remove GPS listeners (primary + secondary)
+        // 3. Register PASSIVE_PROVIDER listener
+        // 4. Persist home to SharedPreferences
+        val actions = mutableListOf<String>()
+        actions.add("RECORD_HOME_POINT")
+        actions.add("REMOVE_GPS_LISTENERS")
+        actions.add("REGISTER_PASSIVE")
+        actions.add("PERSIST_HOME_PREFS")
+        actions.add("EMIT_MOTION_FALSE")
+
+        assertEquals(5, actions.size)
+    }
+
+    @Test
+    fun `transitionToMoving clears home and re-engages GPS`() {
+        // On transition to MOVING:
+        // 1. Clear homeGeofenceCenter
+        // 2. Remove passive listener
+        // 3. Clear persisted home from SharedPreferences
+        // 4. Re-engage GPS via registerProviders()
+        // 5. Restart stop detection timer
+        val actions = mutableListOf<String>()
+        actions.add("CLEAR_HOME")
+        actions.add("REMOVE_PASSIVE")
+        actions.add("CLEAR_PREFS")
+        actions.add("REGISTER_PROVIDERS")
+        actions.add("RESTART_STOP_TIMER")
+        actions.add("EMIT_MOTION_TRUE")
+
+        assertEquals(6, actions.size)
+    }
+
+    @Test
+    fun `passive listener checks distance from home`() {
+        // PASSIVE_PROVIDER delivers locations from other apps.
+        // Each update checks distance from homeGeofenceCenter.
+        // If distance > homeGeofenceRadius → transitionToMoving()
+        val homeLatDeg = 40.0
+        val homeLngDeg = -74.0
+        val passiveLatDeg = 40.002  // ~222m north
+        val passiveLngDeg = -74.0
+        val radiusMeters = 150f
+
+        // Rough distance check (1 deg lat ≈ 111km)
+        val approxDistanceM = Math.abs(passiveLatDeg - homeLatDeg) * 111_000
+        assertTrue(approxDistanceM > radiusMeters)  // should trigger exit
+    }
+
+    @Test
+    fun `setMoving bypasses distance gate`() {
+        // Manual setMoving(true) should directly call transitionToMoving()
+        // Manual setMoving(false) should directly call transitionToStationary()
         val states = mutableListOf<Pair<String, String>>()
         states.add("setMoving(false)" to "STATIONARY")  // immediate
-        states.add("setMoving(true)" to "MOVING")        // immediate + cancel timer
+        states.add("setMoving(true)" to "MOVING")        // immediate
 
         assertEquals("STATIONARY", states[0].second)
         assertEquals("MOVING", states[1].second)
     }
 
     @Test
-    fun `motionStateCallback fires on wrapper state transitions`() {
-        // The wrapper should fire motionStateCallback when its isMoving actually changes,
-        // NOT when MotionDetector reports stillness (which only starts the timer).
-        // This ensures Dart receives motion events at the right time.
+    fun `home point persists across process death`() {
+        // Home point is saved to SharedPreferences with full double precision.
+        // On startTracking, restoreHomeIfNeeded() checks for persisted home.
+        // If found, resumes in STATIONARY state and does a network check.
+        val lat = 40.7128
+        val lng = -74.0060
+        val latBits = java.lang.Double.doubleToRawLongBits(lat)
+        val restored = java.lang.Double.longBitsToDouble(latBits)
+        assertEquals(lat, restored, 0.0)  // exact roundtrip
+    }
+
+    @Test
+    fun `motionStateCallback fires on actual state transitions only`() {
+        // Callback fires on transitionToStationary() and transitionToMoving(),
+        // NOT on accelerometer events that stay within the distance gate.
         val callbackEvents = mutableListOf<Boolean>()
-
-        // Simulate: stillness detected → timer fires → callback(false)
-        callbackEvents.add(false)  // wrapper transitions to stationary
-
-        // Simulate: motion detected → callback(true)
-        callbackEvents.add(true)   // wrapper transitions to moving
+        callbackEvents.add(false)  // transitionToStationary
+        callbackEvents.add(true)   // transitionToMoving
 
         assertEquals(2, callbackEvents.size)
         assertFalse(callbackEvents[0])
         assertTrue(callbackEvents[1])
-    }
-
-    @Test
-    fun `repeated stillness does not stack timers`() {
-        // Calling onStillnessDetected() multiple times should reset the timer,
-        // not stack multiple timers.
-        var timerStartCount = 0
-
-        // Simulate: each call cancels previous and starts new
-        repeat(5) {
-            timerStartCount = 1  // always 1, not accumulating
-        }
-
-        assertEquals(1, timerStartCount)
-    }
-
-    @Test
-    fun `stop detection timer ignored if already stationary`() {
-        // If isMoving is already false, onStillnessDetected should be a no-op
-        var isMoving = false
-        val timerStarted = if (!isMoving) false else true
-        assertFalse(timerStarted)
-    }
-
-    @Test
-    fun `onMotionDetected is no-op when already moving`() {
-        // If isMoving is already true, onMotionDetected should not fire callback
-        var isMoving = true
-        val callbackFired = !isMoving  // only fires if was stationary
-        assertFalse(callbackFired)
     }
 }

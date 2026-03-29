@@ -332,28 +332,7 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 val args = call.arguments as? Map<*, *>
                 val isMoving = args?.get("isMoving") as? Boolean ?: true
                 locationManagerWrapper?.setMoving(isMoving)
-                if (isMoving) {
-                    motionDetector?.let {
-                        // Force the detector's state
-                    }
-                    locationManagerWrapper?.onMotionDetected()
-                } else {
-                    locationManagerWrapper?.onStillnessDetected()
-                }
-                // Emit motion change event
-                val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                    ?: mutableMapOf<String, Any?>(
-                        "latitude" to 0.0,
-                        "longitude" to 0.0,
-                        "altitude" to 0.0,
-                        "accuracy" to 0.0,
-                        "speed" to 0.0,
-                        "heading" to 0.0,
-                        "timestamp" to System.currentTimeMillis(),
-                        "provider" to "unknown",
-                    )
-                positionMap["isMoving"] = isMoving
-                mainHandler.post { motionStreamHandler?.send(positionMap) }
+                // Motion state callback will emit the event to Dart via motionStreamHandler
                 result.success(null)
             }
 
@@ -444,6 +423,25 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         // Start location tracking
         locationManagerWrapper?.startTracking(config)
 
+        // Wire motion state callback — emits motion change events to Dart
+        locationManagerWrapper?.setMotionStateCallback { moving ->
+            mainHandler.post {
+                val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
+                    ?: mutableMapOf<String, Any?>(
+                        "latitude" to 0.0,
+                        "longitude" to 0.0,
+                        "altitude" to 0.0,
+                        "accuracy" to 0.0,
+                        "speed" to 0.0,
+                        "heading" to 0.0,
+                        "timestamp" to System.currentTimeMillis(),
+                        "provider" to "unknown",
+                    )
+                positionMap["isMoving"] = moving
+                motionStreamHandler?.send(positionMap)
+            }
+        }
+
         // Start motion detection if enabled
         if (config.enableMotionDetection && !config.skipActivityUpdates) {
             motionDetector?.updateConfig(config)
@@ -451,24 +449,13 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                 onMotionChanged = { isMoving ->
                     mainHandler.post {
                         if (isMoving) {
-                            locationManagerWrapper?.onMotionDetected()
-                        } else {
-                            locationManagerWrapper?.onStillnessDetected()
+                            // Distance-gated: accelerometer wake triggers network location check,
+                            // NOT direct GPS engagement
+                            locationManagerWrapper?.onMotionDetectedGated()
                         }
-                        // Emit motion change as Position map (Dart motionChangeStream is Stream<Position>)
-                        val positionMap = locationManagerWrapper?.getLastPositionMap()?.toMutableMap()
-                            ?: mutableMapOf<String, Any?>(
-                                "latitude" to 0.0,
-                                "longitude" to 0.0,
-                                "altitude" to 0.0,
-                                "accuracy" to 0.0,
-                                "speed" to 0.0,
-                                "heading" to 0.0,
-                                "timestamp" to System.currentTimeMillis(),
-                                "provider" to "unknown",
-                            )
-                        positionMap["isMoving"] = isMoving
-                        motionStreamHandler?.send(positionMap)
+                        // Note: stillness from accelerometer is ignored for state transitions.
+                        // Stop detection is GPS-speed-only via LocationManagerWrapper.
+                        // Motion change events are emitted by motionStateCallback, not here.
                     }
                 },
                 onActivityChanged = { type, confidence ->

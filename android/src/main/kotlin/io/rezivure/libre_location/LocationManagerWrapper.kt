@@ -65,14 +65,19 @@ class LocationManagerWrapper(
     private val activeListeners = CopyOnWriteArrayList<LocationListener>()
 
     // ----- Stop Detection State Machine -----
-    // Mirrors iOS: when MotionDetector reports stillness we start an accelerated
-    // countdown.  If the device remains still when the timer fires we transition
-    // isMoving→false and reduce GPS power.
+    // GPS-speed-only: when speed < 0.5 m/s for stillnessTimeoutMs, transition to stationary.
     private var stopDetectionTimer: Runnable? = null
-    private var motionDetectorReportsStill: Boolean = false
+    private var lastMovementTime: Long = 0L  // last time speed > 0.5 m/s
 
-    /** Accelerated stop-detection delay (ms) once MotionDetector reports stillness. */
-    private val STOP_DETECTION_DELAY_MS: Long = 60_000L  // 1 minute
+    // ----- Home Geofence (stationary mode) -----
+    private var homeGeofenceCenter: Location? = null
+    private var homeGeofenceRadius: Float = 150f
+
+    private val PREFS_NAME = "libre_location_home"
+    private val PREF_HOME_LAT = "home_lat"
+    private val PREF_HOME_LNG = "home_lng"
+    private val PREF_HOME_RADIUS = "home_radius"
+    private val PREF_HOME_TIME = "home_time"
 
     /** Callback invoked when the wrapper's own isMoving state changes. */
     private var motionStateCallback: ((Boolean) -> Unit)? = null
@@ -142,23 +147,32 @@ class LocationManagerWrapper(
         maxAccuracy = config.maxAccuracy
         maxSpeed = config.maxSpeed
 
-        registerProviders()
+        // Check for persisted home point (process death recovery)
+        restoreHomeIfNeeded()
+
+        if (isMoving) {
+            registerProviders()
+            lastMovementTime = System.currentTimeMillis()
+            restartStopDetectionTimer()
+        }
         startHeartbeat()
         startProviderMonitoring()
 
-        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}, filter=$locationFilterEnabled")
+        Log.d(TAG, "Tracking started: mode=${config.mode}, accuracy=${config.accuracy}, filter=$locationFilterEnabled, isMoving=$isMoving")
     }
 
     fun stopTracking() {
         isTracking = false
         cancelStopDetectionTimer()
-        motionDetectorReportsStill = false
+        homeGeofenceCenter = null
         locationManager.removeUpdates(primaryListener)
         locationManager.removeUpdates(secondaryListener)
+        locationManager.removeUpdates(passiveListener)
         activeListeners.forEach { locationManager.removeUpdates(it) }
         activeListeners.clear()
         stopHeartbeat()
         handler.removeCallbacks(providerCheckRunnable)
+        clearPersistedHome()
         Log.d(TAG, "Tracking stopped")
     }
 
@@ -268,37 +282,34 @@ class LocationManagerWrapper(
 
     // ----- Motion State -----
 
-    @SuppressLint("MissingPermission")
-    fun onMotionDetected() {
-        if (!isTracking) return
-        motionDetectorReportsStill = false
-        cancelStopDetectionTimer()
-
-        val wasStationary = !isMoving
-        if (wasStationary) motionChangeOccurred = true
-        if (!wasStationary) return  // already moving, nothing to do
-
-        isMoving = true
-        Log.d(TAG, "Motion detected — transitioning to MOVING")
-
-        // Re-engage active GPS
-        reEngageActiveGps()
-        motionStateCallback?.invoke(true)
-    }
-
     /**
-     * Called when MotionDetector reports stillness.  Instead of immediately
-     * transitioning isMoving→false we start an accelerated stop-detection
-     * countdown.  If the device is still when the timer fires we transition.
+     * Called when accelerometer detects motion while stationary.
+     * Instead of directly waking GPS, requests a single network location
+     * and checks distance from home point (distance gate).
      */
-    fun onStillnessDetected() {
+    @SuppressLint("MissingPermission")
+    fun onMotionDetectedGated() {
         if (!isTracking) return
-        motionDetectorReportsStill = true
+        if (isMoving) return  // already moving, no-op
 
-        if (!isMoving) return  // already stationary
+        Log.d(TAG, "Motion detected (gated) — requesting network location for distance check")
 
-        // Start accelerated stop-detection countdown (or reset if already running)
-        startStopDetectionTimer()
+        requestSingleNetworkLocation { location ->
+            if (!isTracking || isMoving) return@requestSingleNetworkLocation
+            if (location != null) {
+                checkDistanceFromHome(location)
+            } else {
+                // Network unavailable — check age of last known location
+                val lastTime = lastEmittedLocation?.time ?: 0L
+                val age = System.currentTimeMillis() - lastTime
+                if (age > 30 * 60 * 1000) { // 30 min stale
+                    Log.d(TAG, "Network unavailable, last location stale (${age}ms) — transitioning to MOVING")
+                    transitionToMoving()
+                } else {
+                    Log.d(TAG, "Network unavailable but last location fresh — staying STATIONARY")
+                }
+            }
+        }
     }
 
     /**
@@ -308,42 +319,151 @@ class LocationManagerWrapper(
         if (!isTracking) return
         cancelStopDetectionTimer()
         if (moving) {
-            motionDetectorReportsStill = false
-            val wasStationary = !isMoving
-            isMoving = true
-            if (wasStationary) {
-                reEngageActiveGps()
-                motionStateCallback?.invoke(true)
-            }
+            if (!isMoving) transitionToMoving()
         } else {
-            val wasMoving = isMoving
-            isMoving = false
-            if (wasMoving) {
-                reduceGpsPower()
-                motionStateCallback?.invoke(false)
+            if (isMoving) transitionToStationary()
+        }
+    }
+
+    // ----- State Transitions -----
+
+    @SuppressLint("MissingPermission")
+    fun transitionToStationary() {
+        isMoving = false
+        Log.d(TAG, "Transitioning to STATIONARY — stopping GPS, recording home point")
+
+        // Record home point
+        homeGeofenceCenter = lastEmittedLocation?.let { Location(it) }
+        homeGeofenceRadius = config.stillnessRadiusMeters
+
+        // Stop GPS, keep passive
+        locationManager.removeUpdates(primaryListener)
+        locationManager.removeUpdates(secondaryListener)
+        requestUpdatesIfAvailable(LocationManager.PASSIVE_PROVIDER, passiveListener)
+
+        // Persist home point for process death recovery
+        persistHome()
+
+        cancelStopDetectionTimer()
+        motionStateCallback?.invoke(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun transitionToMoving() {
+        isMoving = true
+        homeGeofenceCenter = null
+        motionChangeOccurred = true
+        Log.d(TAG, "Transitioning to MOVING — re-engaging GPS")
+
+        // Remove passive listener
+        locationManager.removeUpdates(passiveListener)
+
+        // Clear persisted home
+        clearPersistedHome()
+
+        // Re-engage GPS
+        registerProviders()
+
+        // Reset stop detection
+        lastMovementTime = System.currentTimeMillis()
+        restartStopDetectionTimer()
+
+        motionStateCallback?.invoke(true)
+    }
+
+    // ----- Distance Check -----
+
+    private fun checkDistanceFromHome(location: Location) {
+        val home = homeGeofenceCenter ?: return
+        val distance = location.distanceTo(home)
+        if (distance > homeGeofenceRadius) {
+            Log.d(TAG, "Distance from home: ${distance}m > ${homeGeofenceRadius}m — transitioning to MOVING")
+            transitionToMoving()
+        } else {
+            Log.v(TAG, "Distance from home: ${distance}m ≤ ${homeGeofenceRadius}m — staying STATIONARY")
+        }
+    }
+
+    // ----- Network Location Request -----
+
+    @SuppressLint("MissingPermission")
+    private fun requestSingleNetworkLocation(callback: (Location?) -> Unit) {
+        var completed = false
+        try {
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    if (completed) return
+                    completed = true
+                    locationManager.removeUpdates(this)
+                    callback(location)
+                }
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {
+                    if (completed) return
+                    completed = true
+                    locationManager.removeUpdates(this)
+                    callback(null)
+                }
+                @Deprecated("Deprecated in API")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            }
+            locationManager.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+            )
+            // Timeout after 10s
+            handler.postDelayed({
+                if (completed) return@postDelayed
+                completed = true
+                locationManager.removeUpdates(listener)
+                val lastKnown = try {
+                    locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                } catch (_: SecurityException) { null }
+                callback(lastKnown)
+            }, 10_000L)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request network location: ${e.message}")
+            if (!completed) {
+                completed = true
+                callback(null)
             }
         }
     }
 
-    // ----- Stop Detection Timer -----
+    // ----- Stop Detection Timer (GPS-speed-only) -----
 
-    private fun startStopDetectionTimer() {
-        cancelStopDetectionTimer()
-        val runnable = Runnable {
-            if (!isTracking || !isMoving) return@Runnable
-            if (motionDetectorReportsStill) {
-                // Device still reports stillness → transition to stationary
-                isMoving = false
-                Log.d(TAG, "Stop detection timer fired — transitioning to STATIONARY")
-                reduceGpsPower()
-                motionStateCallback?.invoke(false)
-            } else {
-                Log.d(TAG, "Stop detection timer fired but device is moving — ignoring")
-            }
+    /**
+     * Called from processLocation when speed data is available.
+     * Resets lastMovementTime when speed > 0.5 m/s.
+     */
+    private fun updateStopDetection(location: Location) {
+        if (!isMoving || !isTracking) return
+        if (location.hasSpeed() && location.speed > 0.5f) {
+            lastMovementTime = System.currentTimeMillis()
         }
+    }
+
+    private fun restartStopDetectionTimer() {
+        cancelStopDetectionTimer()
+        val timeoutMs = config.stillnessTimeoutMs
+        val runnable = Runnable { checkStopDetection() }
         stopDetectionTimer = runnable
-        handler.postDelayed(runnable, STOP_DETECTION_DELAY_MS)
-        Log.d(TAG, "Stop detection timer started (${STOP_DETECTION_DELAY_MS}ms)")
+        handler.postDelayed(runnable, timeoutMs)
+    }
+
+    private fun checkStopDetection() {
+        if (!isTracking || !isMoving) return
+        val elapsed = System.currentTimeMillis() - lastMovementTime
+        val timeoutMs = config.stillnessTimeoutMs
+        if (elapsed >= timeoutMs) {
+            Log.d(TAG, "Stop detection: no movement for ${elapsed}ms — transitioning to STATIONARY")
+            transitionToStationary()
+        } else {
+            // Reschedule for remaining time
+            val remaining = timeoutMs - elapsed
+            val runnable = Runnable { checkStopDetection() }
+            stopDetectionTimer = runnable
+            handler.postDelayed(runnable, remaining)
+        }
     }
 
     private fun cancelStopDetectionTimer() {
@@ -353,29 +473,57 @@ class LocationManagerWrapper(
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun reduceGpsPower() {
-        if (config.mode == 1) {
-            locationManager.removeUpdates(primaryListener)
-            Log.d(TAG, "GPS paused — relying on network + heartbeat")
-        }
+    // ----- Home Point Persistence -----
+
+    private fun persistHome() {
+        val home = homeGeofenceCenter ?: return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putLong(PREF_HOME_LAT, java.lang.Double.doubleToRawLongBits(home.latitude))
+            .putLong(PREF_HOME_LNG, java.lang.Double.doubleToRawLongBits(home.longitude))
+            .putFloat(PREF_HOME_RADIUS, homeGeofenceRadius)
+            .putLong(PREF_HOME_TIME, home.time)
+            .apply()
     }
 
+    private fun clearPersistedHome() {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().apply()
+    }
+
+    /**
+     * Restores home point from SharedPreferences after process death.
+     * Called during startTracking if a persisted home exists.
+     */
     @SuppressLint("MissingPermission")
-    private fun reEngageActiveGps() {
-        if (config.mode == 1) {
-            try {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    config.intervalMs,
-                    config.distanceFilter,
-                    primaryListener,
-                    Looper.getMainLooper()
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to re-engage GPS: ${e.message}")
-            }
-            Log.d(TAG, "GPS re-engaged for active tracking")
+    private fun restoreHomeIfNeeded() {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.contains(PREF_HOME_TIME)) return
+
+        val lat = java.lang.Double.longBitsToDouble(prefs.getLong(PREF_HOME_LAT, 0L))
+        val lng = java.lang.Double.longBitsToDouble(prefs.getLong(PREF_HOME_LNG, 0L))
+        val radius = prefs.getFloat(PREF_HOME_RADIUS, 150f)
+        val time = prefs.getLong(PREF_HOME_TIME, 0L)
+
+        if (lat == 0.0 && lng == 0.0) return
+
+        val home = Location("restored").apply {
+            latitude = lat
+            longitude = lng
+            this.time = time
+        }
+        homeGeofenceCenter = home
+        homeGeofenceRadius = radius
+        isMoving = false
+
+        // Register passive provider
+        requestUpdatesIfAvailable(LocationManager.PASSIVE_PROVIDER, passiveListener)
+
+        Log.d(TAG, "Restored home point from SharedPreferences: ($lat, $lng) radius=${radius}m")
+
+        // Check if we've moved since process death
+        requestSingleNetworkLocation { location ->
+            if (location != null) checkDistanceFromHome(location)
         }
     }
 
@@ -535,6 +683,9 @@ class LocationManagerWrapper(
         lastEmittedTime = smoothed.time
         cachedLocation = smoothed
         motionChangeOccurred = false
+
+        // Feed stop detection (GPS-speed-only)
+        updateStopDetection(smoothed)
 
         // Notify location update listeners (e.g., GeofenceManager for distance-based checking)
         for (listener in locationUpdateListeners) {
