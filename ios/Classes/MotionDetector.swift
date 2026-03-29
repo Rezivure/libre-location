@@ -49,6 +49,12 @@ final class MotionDetectorService {
     // Config
     private var motionConfirmDelayMs: TimeInterval = 0
     private var skipActivityUpdates = false
+    private var activityConfidenceThreshold: Int = 70
+    private var minActivityEmissionInterval: TimeInterval = 10.0  // seconds
+
+    // Activity filtering state
+    private var lastEmittedActivity: DetectedActivity?
+    private var lastEmissionTime: Date = .distantPast
 
     // Accelerometer
     private let accelerometerUpdateInterval: TimeInterval = 0.5
@@ -96,8 +102,10 @@ final class MotionDetectorService {
 
     /// Update configuration without full restart.
     func configure(motionConfirmDelayMs: TimeInterval? = nil,
-                   skipActivityUpdates: Bool? = nil) {
+                   skipActivityUpdates: Bool? = nil,
+                   activityConfidenceThreshold: Int? = nil) {
         if let d = motionConfirmDelayMs { self.motionConfirmDelayMs = d }
+        if let t = activityConfidenceThreshold { self.activityConfidenceThreshold = t }
         if let v = skipActivityUpdates {
             self.skipActivityUpdates = v
             if v {
@@ -124,12 +132,23 @@ final class MotionDetectorService {
     private func processActivity(_ activity: CMMotionActivity) {
         let (detected, confidence) = classifyActivity(activity)
 
-        // Only report if activity type actually changed
-        if detected != currentActivity {
-            currentActivity = detected
+        // Update internal state for motion detection regardless of emission
+        currentActivity = detected
 
-            // Emit with keys matching Dart ActivityEvent.fromMap():
-            // "activity" (String) and "confidence" (Int, 0-100)
+        // --- Activity emission filtering ---
+        let shouldEmit: Bool = {
+            // 1. Confidence must meet threshold
+            if confidence < self.activityConfidenceThreshold { return false }
+            // 2. Don't emit duplicate consecutive activity types
+            if detected == self.lastEmittedActivity { return false }
+            // 3. Minimum interval between emissions
+            if Date().timeIntervalSince(self.lastEmissionTime) < self.minActivityEmissionInterval { return false }
+            return true
+        }()
+
+        if shouldEmit {
+            lastEmittedActivity = detected
+            lastEmissionTime = Date()
             activityChangeCallback?([
                 "activity": detected.rawValue,
                 "confidence": confidence,
