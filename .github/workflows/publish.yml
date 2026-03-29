@@ -10,9 +10,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # Required for pub.dev OIDC authentication
+      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.0'
@@ -20,18 +23,26 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - name: Check if version already published
-        id: version_check
+      - name: Auto-bump patch version and publish
         run: |
-          LOCAL_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pub.dev/api/packages/libre_location/versions/$LOCAL_VERSION")
+          CURRENT=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pub.dev/api/packages/libre_location/versions/$CURRENT")
+          
           if [ "$HTTP_CODE" = "200" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Version $LOCAL_VERSION already published — skipping"
+            # Version exists — bump patch
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            sed -i "s/^version: .*/version: $NEW_VERSION/" pubspec.yaml
+            echo "Bumped $CURRENT → $NEW_VERSION"
+            
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pubspec.yaml
+            git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+            git push
+            
+            dart pub publish --force
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Version $LOCAL_VERSION not yet published — publishing"
+            echo "Version $CURRENT not yet published — publishing as-is"
+            dart pub publish --force
           fi
-      - name: Publish to pub.dev
-        if: steps.version_check.outputs.skip != 'true'
-        run: dart pub publish --force
