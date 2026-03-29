@@ -288,6 +288,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             }
 
             if enableMotion {
+                if let threshold = args["activityConfidenceThreshold"] as? Int {
+                    motionDetector?.configure(activityConfidenceThreshold: threshold)
+                }
                 motionDetector?.start(
                     onMotionChanged: { [weak self] isMoving in
                         if isMoving {
@@ -330,6 +333,9 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             }
             if let disable = args["skipActivityUpdates"] as? Bool {
                 motionDetector?.configure(skipActivityUpdates: disable)
+            }
+            if let threshold = args["activityConfidenceThreshold"] as? Int {
+                motionDetector?.configure(activityConfidenceThreshold: threshold)
             }
 
             result(nil)
