@@ -286,7 +286,9 @@ class TrackingSimulator {
     var totalSeconds = 0.0;
 
     // Time accumulator for stillness detection
+    // ignore: unused_local_variable
     var stillnessAccumulator = 0.0;
+    // ignore: unused_local_variable
     var geofenceActive = false;
 
     // Initial state: stationary with geofence
@@ -416,8 +418,6 @@ class TrackingSimulator {
 // ============================================================================
 // SCENARIO DEFINITIONS
 // ============================================================================
-
-const _min = Duration(minutes: 1);
 
 Duration minutes(int m) => Duration(minutes: m);
 Duration hours(int h) => Duration(hours: h);
