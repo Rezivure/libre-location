@@ -7,6 +7,12 @@ version: 0.1.0
 homepage: https://github.com/Rezivure/libre-location
 repository: https://github.com/Rezivure/libre-location
 issue_tracker: https://github.com/Rezivure/libre-location/issues
+topics:
+  - location
+  - gps
+  - background-location
+  - privacy
+  - geofencing
 
 environment:
   sdk: ">=3.1.0 <4.0.0"
