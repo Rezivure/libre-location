@@ -634,20 +634,33 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
 
     // ----- Buffered Location Delivery -----
 
+    /**
+     * Delivers buffered locations in throttled batches of 50 with 100ms delay
+     * between batches to avoid overwhelming the Flutter event channel.
+     */
     private fun deliverBufferedLocations() {
         val db = locationDatabase ?: return
         val undelivered = db.getUndeliveredLocations(500)
         if (undelivered.isEmpty()) return
 
-        Log.d(TAG, "Delivering ${undelivered.size} buffered locations")
-        val ids = mutableListOf<Long>()
-        for (loc in undelivered) {
-            val id = loc["id"] as? Long
-            if (id != null) ids.add(id)
-            positionStreamHandler?.send(loc)
-        }
+        Log.d(TAG, "Delivering ${undelivered.size} buffered locations in throttled batches")
+
+        // Mark all as delivered upfront to avoid re-delivery
+        val ids = undelivered.mapNotNull { it["id"] as? Long }
         if (ids.isNotEmpty()) {
             db.markDelivered(ids)
+        }
+
+        // Send in batches of 50 with 100ms delay between batches
+        val batchSize = 50
+        val batches = undelivered.chunked(batchSize)
+        for ((index, batch) in batches.withIndex()) {
+            val delayMs = (index * 100).toLong()
+            mainHandler.postDelayed({
+                for (loc in batch) {
+                    positionStreamHandler?.send(loc)
+                }
+            }, delayMs)
         }
     }
 

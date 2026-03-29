@@ -61,6 +61,23 @@ class LocationManagerWrapper(
 
     private val activeListeners = CopyOnWriteArrayList<LocationListener>()
 
+    // ----- Stop Detection State Machine -----
+    // Mirrors iOS: when MotionDetector reports stillness we start an accelerated
+    // countdown.  If the device remains still when the timer fires we transition
+    // isMoving→false and reduce GPS power.
+    private var stopDetectionTimer: Runnable? = null
+    private var motionDetectorReportsStill: Boolean = false
+
+    /** Accelerated stop-detection delay (ms) once MotionDetector reports stillness. */
+    private val STOP_DETECTION_DELAY_MS: Long = 60_000L  // 1 minute
+
+    /** Callback invoked when the wrapper's own isMoving state changes. */
+    private var motionStateCallback: ((Boolean) -> Unit)? = null
+
+    fun setMotionStateCallback(callback: (Boolean) -> Unit) {
+        motionStateCallback = callback
+    }
+
     // ----- Primary Location Listener -----
 
     private val primaryListener = object : LocationListener {
@@ -131,6 +148,8 @@ class LocationManagerWrapper(
 
     fun stopTracking() {
         isTracking = false
+        cancelStopDetectionTimer()
+        motionDetectorReportsStill = false
         locationManager.removeUpdates(primaryListener)
         locationManager.removeUpdates(secondaryListener)
         activeListeners.forEach { locationManager.removeUpdates(it) }
@@ -249,10 +268,98 @@ class LocationManagerWrapper(
     @SuppressLint("MissingPermission")
     fun onMotionDetected() {
         if (!isTracking) return
-        val wasStationary = !isMoving
-        isMoving = true
+        motionDetectorReportsStill = false
+        cancelStopDetectionTimer()
 
-        if (wasStationary && config.mode == 1) {
+        val wasStationary = !isMoving
+        if (!wasStationary) return  // already moving, nothing to do
+
+        isMoving = true
+        Log.d(TAG, "Motion detected — transitioning to MOVING")
+
+        // Re-engage active GPS
+        reEngageActiveGps()
+        motionStateCallback?.invoke(true)
+    }
+
+    /**
+     * Called when MotionDetector reports stillness.  Instead of immediately
+     * transitioning isMoving→false we start an accelerated stop-detection
+     * countdown.  If the device is still when the timer fires we transition.
+     */
+    fun onStillnessDetected() {
+        if (!isTracking) return
+        motionDetectorReportsStill = true
+
+        if (!isMoving) return  // already stationary
+
+        // Start accelerated stop-detection countdown (or reset if already running)
+        startStopDetectionTimer()
+    }
+
+    /**
+     * Manually override motion state. Used by setMoving API.
+     */
+    fun setMoving(moving: Boolean) {
+        if (!isTracking) return
+        cancelStopDetectionTimer()
+        if (moving) {
+            motionDetectorReportsStill = false
+            val wasStationary = !isMoving
+            isMoving = true
+            if (wasStationary) {
+                reEngageActiveGps()
+                motionStateCallback?.invoke(true)
+            }
+        } else {
+            val wasMoving = isMoving
+            isMoving = false
+            if (wasMoving) {
+                reduceGpsPower()
+                motionStateCallback?.invoke(false)
+            }
+        }
+    }
+
+    // ----- Stop Detection Timer -----
+
+    private fun startStopDetectionTimer() {
+        cancelStopDetectionTimer()
+        val runnable = Runnable {
+            if (!isTracking || !isMoving) return@Runnable
+            if (motionDetectorReportsStill) {
+                // Device still reports stillness → transition to stationary
+                isMoving = false
+                Log.d(TAG, "Stop detection timer fired — transitioning to STATIONARY")
+                reduceGpsPower()
+                motionStateCallback?.invoke(false)
+            } else {
+                Log.d(TAG, "Stop detection timer fired but device is moving — ignoring")
+            }
+        }
+        stopDetectionTimer = runnable
+        handler.postDelayed(runnable, STOP_DETECTION_DELAY_MS)
+        Log.d(TAG, "Stop detection timer started (${STOP_DETECTION_DELAY_MS}ms)")
+    }
+
+    private fun cancelStopDetectionTimer() {
+        stopDetectionTimer?.let {
+            handler.removeCallbacks(it)
+            stopDetectionTimer = null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun reduceGpsPower() {
+        if (config.mode == 1) {
+            locationManager.removeUpdates(primaryListener)
+            Log.d(TAG, "GPS paused — relying on network + heartbeat")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun reEngageActiveGps() {
+        if (config.mode == 1) {
             try {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
@@ -264,35 +371,7 @@ class LocationManagerWrapper(
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to re-engage GPS: ${e.message}")
             }
-            Log.d(TAG, "Motion detected — GPS re-engaged")
-        }
-    }
-
-    /**
-     * Manually override motion state. Used by setMoving API.
-     */
-    fun setMoving(moving: Boolean) {
-        if (!isTracking) return
-        if (moving) {
-            onMotionDetected()
-        } else {
-            val wasMoving = isMoving
-            isMoving = false
-            if (wasMoving && config.mode == 1) {
-                locationManager.removeUpdates(primaryListener)
-                Log.d(TAG, "setMoving: forced stationary — GPS paused")
-            }
-        }
-    }
-
-    fun onStillnessDetected() {
-        if (!isTracking) return
-        val wasMoving = isMoving
-        isMoving = false
-
-        if (wasMoving && config.mode == 1) {
-            locationManager.removeUpdates(primaryListener)
-            Log.d(TAG, "Stillness detected — GPS paused (network only)")
+            Log.d(TAG, "GPS re-engaged for active tracking")
         }
     }
 
