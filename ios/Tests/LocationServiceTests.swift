@@ -193,6 +193,83 @@ final class LocationToMapTests: XCTestCase {
     }
 }
 
+// MARK: - Stop Detection Integration Tests
+
+final class StopDetectionTests: XCTestCase {
+
+    func testOnStillnessDetectedDoesNotImmediatelyStop() {
+        let service = LocationService(onPosition: { _ in })
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        XCTAssertTrue(service.isMoving)
+
+        service.onStillnessDetected()
+        XCTAssertTrue(service.isMoving, "Should not immediately transition to stationary")
+
+        service.stopTracking()
+    }
+
+    func testOnMotionDetectedWhileStationary() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.onMotionDetected()
+        XCTAssertTrue(service.isMoving, "onMotionDetected should transition back to moving")
+
+        service.stopTracking()
+    }
+
+    func testOnStillnessNotTracking() {
+        let service = LocationService(onPosition: { _ in })
+        service.onStillnessDetected()
+        XCTAssertFalse(service.isTracking)
+    }
+
+    func testOnMotionDetectedResetsStillnessState() {
+        let service = LocationService(onPosition: { _ in })
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        service.onStillnessDetected()
+        service.onMotionDetected()
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testSetMovingManualOverrideStillWorks() {
+        let service = LocationService(
+            onPosition: { _ in },
+            onMotionChange: { _ in }
+        )
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+
+        service.setMoving(moving: false)
+        XCTAssertFalse(service.isMoving)
+
+        service.setMoving(moving: true)
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
+    }
+
+    func testApplyConfigResetsStillnessState() {
+        let service = LocationService(onPosition: { _ in })
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        service.onStillnessDetected()
+
+        // Re-start should reset stillness state
+        service.startTracking(accuracy: 0, intervalMs: 1000, distanceFilter: 1.0, mode: 1)
+        XCTAssertTrue(service.isMoving)
+
+        service.stopTracking()
+    }
+}
+
 // MARK: - Geofence Distance Calculation Tests
 
 final class GeofenceDistanceTests: XCTestCase {
