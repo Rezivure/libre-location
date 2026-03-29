@@ -43,38 +43,6 @@ struct LocationServiceConfig: Codable {
     }
 }
 
-// MARK: - Location Buffer
-
-/// Buffers location data to UserDefaults so nothing is lost if the app is killed.
-final class LocationBuffer {
-    private static let key = "libre_location_buffer"
-    private static let maxSize = 1000
-
-    static func append(_ location: [String: Any]) {
-        var buffer = load()
-        buffer.append(location)
-        if buffer.count > maxSize {
-            buffer = Array(buffer.suffix(maxSize))
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: buffer) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    static func load() -> [[String: Any]] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else { return [] }
-        return arr
-    }
-
-    static func flush() -> [[String: Any]] {
-        let buf = load()
-        UserDefaults.standard.removeObject(forKey: key)
-        return buf
-    }
-}
-
 // MARK: - LocationService
 
 /// Production-grade CLLocationManager wrapper with background tracking,
