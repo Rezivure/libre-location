@@ -53,6 +53,9 @@ class LocationManagerWrapper(
     private var lastEmittedTime: Long = 0L
     private var cachedLocation: Location? = null
 
+    // Motion change tracking — allows first emission after motion state change to bypass time filter
+    private var motionChangeOccurred = false
+
     private var providerChangeCallback: ((Map<String, Any?>) -> Unit)? = null
     private var locationUpdateListeners = mutableListOf<(Location) -> Unit>()
     private var lastProviderState = mutableMapOf<String, Boolean>()
@@ -251,6 +254,7 @@ class LocationManagerWrapper(
         if (!isTracking) return
         val wasStationary = !isMoving
         isMoving = true
+        if (wasStationary) motionChangeOccurred = true
 
         if (wasStationary && config.mode == 1) {
             try {
@@ -289,6 +293,7 @@ class LocationManagerWrapper(
         if (!isTracking) return
         val wasMoving = isMoving
         isMoving = false
+        if (wasMoving) motionChangeOccurred = true
 
         if (wasMoving && config.mode == 1) {
             locationManager.removeUpdates(primaryListener)
@@ -371,15 +376,6 @@ class LocationManagerWrapper(
                         Log.v(TAG, "Filtered: implied speed ${impliedSpeed}m/s > ${maxSpeed}m/s")
                         return
                     }
-
-                    // Distance filter: don't emit if distance < distanceFilter
-                    if (distance < config.distanceFilter) {
-                        // Smoothing: if within accuracy radius, weight toward previous
-                        if (distance < location.accuracy) {
-                            Log.v(TAG, "Filtered: within accuracy radius (${distance}m < ${location.accuracy}m)")
-                        }
-                        return
-                    }
                 }
 
                 // Duplicate time threshold
@@ -434,9 +430,33 @@ class LocationManagerWrapper(
             location
         }
 
+        // Software distance filter (post-Kalman): enforce distanceFilter as hard limit
+        // Android's setSmallestDisplacement is respected better than iOS but add software backup
+        if (locationFilterEnabled) {
+            val last = lastEmittedLocation
+            if (last != null) {
+                val distance = smoothed.distanceTo(last)
+                if (distance < config.distanceFilter) {
+                    Log.v(TAG, "Software distance filter: ${distance}m < ${config.distanceFilter}m")
+                    return
+                }
+            }
+
+            // Software time filter: enforce intervalMs as minimum emission interval
+            val isMotionChangeBypass = motionChangeOccurred && location.speed > 0
+            if (lastEmittedTime > 0 && !isMotionChangeBypass) {
+                val elapsedMs = location.time - lastEmittedTime
+                if (elapsedMs < config.intervalMs) {
+                    Log.v(TAG, "Software time filter: ${elapsedMs}ms < ${config.intervalMs}ms")
+                    return
+                }
+            }
+        }
+
         lastEmittedLocation = smoothed
         lastEmittedTime = smoothed.time
         cachedLocation = smoothed
+        motionChangeOccurred = false
 
         // Notify location update listeners (e.g., GeofenceManager for distance-based checking)
         for (listener in locationUpdateListeners) {

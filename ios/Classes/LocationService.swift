@@ -115,6 +115,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // Stop detection
     private var lastMovementDate = Date()
     private var stopDetectionTimer: Timer?
+    private var motionDetectorReportsStill = false
+    private var stillnessStartDate: Date?
 
     // Kalman filter
     private var kalmanFilter = KalmanFilter()
@@ -286,6 +288,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     func onMotionDetected() {
         guard isTracking else { return }
         lastMovementDate = Date()
+        motionDetectorReportsStill = false
+        stillnessStartDate = nil
 
         if !isMoving {
             isMoving = true
@@ -297,9 +301,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             locationManager.desiredAccuracy = accuracyForConfig()
             locationManager.distanceFilter = config.distanceFilter
 
+            // Restart active location updates
+            locationManager.startUpdatingLocation()
             if config.mode == 2 {
                 locationManager.stopMonitoringSignificantLocationChanges()
-                locationManager.startUpdatingLocation()
             }
         }
 
@@ -308,7 +313,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     func onStillnessDetected() {
         guard isTracking else { return }
-        // Don't immediately go stationary; let stillnessTimeoutMin handle it
+        motionDetectorReportsStill = true
+        if stillnessStartDate == nil {
+            stillnessStartDate = Date()
+        }
+        restartStopDetectionTimer()
     }
 
     /// Manually override motion state (setMoving API).
@@ -508,6 +517,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         isTracking = true
         isMoving = true
         lastMovementDate = Date()
+        motionDetectorReportsStill = false
+        stillnessStartDate = nil
 
         // Core settings
         locationManager.desiredAccuracy = accuracyForConfig()
@@ -659,10 +670,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         stopStopDetectionTimer()
         guard config.stillnessTimeoutMin > 0 else { return }
 
-        // stillnessTimeoutMin is in minutes (from Dart)
         let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
+
+        // Calculate remaining time based on earliest stillness signal
+        let now = Date()
+        let gpsElapsed = now.timeIntervalSince(lastMovementDate)
+        let accelElapsed: TimeInterval
+        if motionDetectorReportsStill, let start = stillnessStartDate {
+            accelElapsed = now.timeIntervalSince(start)
+        } else {
+            accelElapsed = 0
+        }
+        let maxElapsed = max(gpsElapsed, accelElapsed)
+        let remaining = max(1.0, timeout - maxElapsed)
+
         stopDetectionTimer = Timer.scheduledTimer(
-            withTimeInterval: timeout,
+            withTimeInterval: remaining,
             repeats: false
         ) { [weak self] _ in
             self?.handleStopTimeout()
@@ -677,20 +700,56 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private func handleStopTimeout() {
         guard isTracking, isMoving else { return }
 
-        let elapsed = Date().timeIntervalSince(lastMovementDate)
+        let now = Date()
         let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
 
-        if elapsed >= timeout {
-            isMoving = false
+        // Condition A: GPS speed has been < 0.5 for stillnessTimeoutMin
+        let gpsStillElapsed = now.timeIntervalSince(lastMovementDate)
+        let gpsStill = gpsStillElapsed >= timeout
 
-            // Emit motion change with position
-            emitMotionChange(isMoving: false)
+        // Condition B: MotionDetector reports still for stillnessTimeoutMin
+        let accelStill: Bool
+        if motionDetectorReportsStill, let start = stillnessStartDate {
+            accelStill = now.timeIntervalSince(start) >= timeout
+        } else {
+            accelStill = false
+        }
 
-            // Reduce power: switch to lower accuracy or significant changes
-            if config.mode != 0 {
-                locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-                locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
+        if gpsStill || accelStill {
+            transitionToStationary()
+        } else {
+            // Reschedule with remaining time
+            let gpsRemaining = gpsStill ? Double.greatestFiniteMagnitude : (timeout - gpsStillElapsed)
+            let accelRemaining: Double
+            if motionDetectorReportsStill, let start = stillnessStartDate {
+                accelRemaining = timeout - now.timeIntervalSince(start)
+            } else {
+                accelRemaining = Double.greatestFiniteMagnitude
             }
+            let nextCheck = max(1.0, min(gpsRemaining, accelRemaining))
+            stopStopDetectionTimer()
+            stopDetectionTimer = Timer.scheduledTimer(
+                withTimeInterval: nextCheck,
+                repeats: false
+            ) { [weak self] _ in
+                self?.handleStopTimeout()
+            }
+        }
+    }
+
+    private func transitionToStationary() {
+        isMoving = false
+
+        // Emit motion change with position
+        emitMotionChange(isMoving: false)
+
+        // Stop active GPS, keep significant location changes + heartbeat
+        locationManager.stopUpdatingLocation()
+        locationManager.startMonitoringSignificantLocationChanges()
+
+        if config.mode != 0 {
+            locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+            locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
         }
     }
 
