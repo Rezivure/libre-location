@@ -95,7 +95,7 @@ class PresetConfig {
           initiallyMoving: false,
           activityCheckIntervalMs: 15000,
           activityConfidenceThreshold: 75,
-          heartbeatInterval: 1200,
+          heartbeatInterval: 900,
           activityType: ActivityType.other,
           pausesLocationUpdatesAutomatically: true,
           keepAwake: false,
@@ -169,23 +169,23 @@ class PresetConfig {
       case TrackingPreset.balanced:
         switch (activity) {
           case 'in_vehicle':
-            return const ActivityOverrides(distanceFilter: 100, accuracy: Accuracy.balanced, heartbeatInterval: 600);
+            return const ActivityOverrides(distanceFilter: 150, accuracy: Accuracy.balanced, heartbeatInterval: 600);
           case 'on_bicycle':
             return const ActivityOverrides(distanceFilter: 30, accuracy: Accuracy.high, heartbeatInterval: 900);
           case 'running':
             return const ActivityOverrides(distanceFilter: 20, accuracy: Accuracy.high, heartbeatInterval: 900);
           case 'walking':
           case 'on_foot':
-            return const ActivityOverrides(distanceFilter: 30, accuracy: Accuracy.high, heartbeatInterval: 900);
+            return const ActivityOverrides(distanceFilter: 20, accuracy: Accuracy.high, heartbeatInterval: 900);
           case 'still':
           default:
-            return const ActivityOverrides(distanceFilter: 200, accuracy: Accuracy.balanced, heartbeatInterval: 1200);
+            return const ActivityOverrides(distanceFilter: 500, accuracy: Accuracy.low, heartbeatInterval: 1200);
         }
 
       case TrackingPreset.high:
         switch (activity) {
           case 'in_vehicle':
-            return const ActivityOverrides(distanceFilter: 20, accuracy: Accuracy.high, heartbeatInterval: 180);
+            return const ActivityOverrides(distanceFilter: 50, accuracy: Accuracy.high, heartbeatInterval: 180);
           case 'on_bicycle':
             return const ActivityOverrides(distanceFilter: 10, accuracy: Accuracy.high, heartbeatInterval: 180);
           case 'running':
@@ -206,9 +206,9 @@ class PresetConfig {
       case TrackingPreset.low:
         return const LifecycleOverrides(distanceFilter: 200, accuracy: Accuracy.balanced, heartbeatInterval: 900, intervalMs: 120000);
       case TrackingPreset.balanced:
-        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.high, heartbeatInterval: 300, intervalMs: 15000);
+        return const LifecycleOverrides(distanceFilter: 25, accuracy: Accuracy.high, heartbeatInterval: 300, intervalMs: 10000);
       case TrackingPreset.high:
-        return const LifecycleOverrides(distanceFilter: 5, accuracy: Accuracy.navigation, heartbeatInterval: 120, intervalMs: 5000);
+        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.navigation, heartbeatInterval: 120, intervalMs: 5000);
     }
   }
 
@@ -218,7 +218,7 @@ class PresetConfig {
       case TrackingPreset.low:
         return const LifecycleOverrides(distanceFilter: 500, accuracy: Accuracy.low, heartbeatInterval: 1800, intervalMs: 300000);
       case TrackingPreset.balanced:
-        return const LifecycleOverrides(distanceFilter: 50, accuracy: Accuracy.high, heartbeatInterval: 1200, intervalMs: 60000);
+        return const LifecycleOverrides(distanceFilter: 100, accuracy: Accuracy.high, heartbeatInterval: 900, intervalMs: 30000);
       case TrackingPreset.high:
         return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.high, heartbeatInterval: 300, intervalMs: 15000);
     }
