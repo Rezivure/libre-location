@@ -69,6 +69,11 @@ class MotionDetector(private val context: Context) {
     // Activity estimation
     private var lastActivityType: String = "unknown"
     private var lastActivityConfidence: Int = 0
+    // Activity emission filtering
+    var activityConfidenceThreshold: Int = 70
+    var minActivityEmissionIntervalMs: Long = 10_000L
+    private var lastEmittedActivityType: String? = null
+    private var lastEmissionTime: Long = 0L
     private val recentVariances = mutableListOf<Double>()
     private val varianceWindowSize = 10
 
@@ -212,6 +217,7 @@ class MotionDetector(private val context: Context) {
         motionConfirmDelayMs = config.motionConfirmDelayMs
         stillnessDelayMs = config.stillnessDelayMs
         skipStillnessDetection = config.skipStillnessDetection
+        activityConfidenceThreshold = config.activityConfidenceThreshold
         // Map stillnessRadiusMeters to stillness threshold heuristically
         stillnessThreshold = when {
             config.stillnessRadiusMeters <= 10f -> 0.15
@@ -384,9 +390,17 @@ class MotionDetector(private val context: Context) {
         val winnerWeight = votes[type] ?: 0
         val confidence = if (totalWeight > 0) ((winnerWeight / totalWeight) * 100).toInt().coerceIn(0, 100) else 50
 
-        if (type != lastActivityType) {
-            lastActivityType = type
-            lastActivityConfidence = confidence
+        lastActivityType = type
+        lastActivityConfidence = confidence
+
+        // Filtered emission: confidence threshold + dedup + min interval
+        val now = System.currentTimeMillis()
+        if (confidence >= activityConfidenceThreshold
+            && type != lastEmittedActivityType
+            && now - lastEmissionTime >= minActivityEmissionIntervalMs
+        ) {
+            lastEmittedActivityType = type
+            lastEmissionTime = now
             activityCallback?.invoke(type, confidence)
         }
     }
