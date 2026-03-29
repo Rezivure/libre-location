@@ -282,13 +282,11 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 if let threshold = args["activityConfidenceThreshold"] as? Int {
                     motionDetector?.configure(activityConfidenceThreshold: threshold)
                 }
+                // Motion detector is for activity reporting only.
+                // Accelerometer motion does NOT wake GPS — only geofence exit or SLC can.
                 motionDetector?.start(
-                    onMotionChanged: { [weak self] isMoving in
-                        if isMoving {
-                            self?.locationService?.onMotionDetected()
-                        } else {
-                            self?.locationService?.onStillnessDetected()
-                        }
+                    onMotionChanged: { _ in
+                        // No-op: motion state changes do not affect LocationService
                     },
                     onActivityChanged: { [weak self] activity in
                         self?.activityStreamHandler?.send(activity)

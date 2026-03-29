@@ -83,8 +83,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // Stop detection
     private var lastMovementDate = Date()
     private var stopDetectionTimer: Timer?
-    private var motionDetectorReportsStill = false
-    private var stillnessStartDate: Date?
+
+    // Home geofence (stationary wake)
+    private static let homeGeofenceId = "libre_home_geofence"
+    private var homeGeofenceCenter: CLLocation?
 
     // Kalman filter
     private var kalmanFilter = KalmanFilter()
@@ -163,6 +165,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         locationManager.stopUpdatingLocation()
         locationManager.stopMonitoringSignificantLocationChanges()
+        removeHomeGeofence()
+        homeGeofenceCenter = nil
         stopHeartbeat()
         stopKeepAwake()
         stopStopDetectionTimer()
@@ -253,56 +257,27 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - Motion State
 
+    /// Called by MotionDetector — NO-OP for GPS wake.
+    /// Accelerometer motion must NOT re-engage GPS. Only geofence exit or SLC can wake.
     func onMotionDetected() {
-        guard isTracking else { return }
-        lastMovementDate = Date()
-        motionDetectorReportsStill = false
-        stillnessStartDate = nil
-
-        if !isMoving {
-            isMoving = true
-
-            // Emit motion change with current position
-            emitMotionChange(isMoving: true)
-
-            // Switch to active GPS
-            locationManager.desiredAccuracy = accuracyForConfig()
-            locationManager.distanceFilter = config.distanceFilter
-
-            // Restart active location updates
-            locationManager.startUpdatingLocation()
-            if config.mode == 2 {
-                locationManager.stopMonitoringSignificantLocationChanges()
-            }
-        }
-
-        restartStopDetectionTimer()
+        // No-op: accelerometer does not wake GPS
     }
 
+    /// Called by MotionDetector — NO-OP.
+    /// Stop detection is GPS-speed-only now.
     func onStillnessDetected() {
-        guard isTracking else { return }
-        motionDetectorReportsStill = true
-        if stillnessStartDate == nil {
-            stillnessStartDate = Date()
-        }
-        restartStopDetectionTimer()
+        // No-op: stop detection uses GPS speed only
     }
 
     /// Manually override motion state (setMoving API).
     func setMoving(moving: Bool) {
         guard isTracking else { return }
         if moving {
-            onMotionDetected()
+            guard !isMoving else { return }
+            transitionToMoving()
         } else {
             guard isMoving else { return }
-            isMoving = false
-            emitMotionChange(isMoving: false)
-
-            // Reduce power
-            if config.mode != 0 {
-                locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-                locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
-            }
+            transitionToStationary()
         }
     }
 
@@ -359,8 +334,26 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     // MARK: - CLLocationManagerDelegate
 
+    func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        if region.identifier == Self.homeGeofenceId {
+            LibreLocationPlugin.log("Home geofence EXIT — transitioning to MOVING")
+            transitionToMoving()
+            return
+        }
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
+
+        // SLC distance check when stationary: if we've moved beyond stillnessRadius, wake up
+        if !isMoving, let homeCenter = homeGeofenceCenter {
+            let distance = location.distance(from: homeCenter)
+            if distance > config.stillnessRadiusMeters {
+                LibreLocationPlugin.log("SLC exit detected — distance \(distance)m from home")
+                transitionToMoving()
+                return
+            }
+        }
 
         // Filter out old/inaccurate readings
         let age = abs(location.timestamp.timeIntervalSinceNow)
@@ -485,8 +478,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         isTracking = true
         isMoving = true
         lastMovementDate = Date()
-        motionDetectorReportsStill = false
-        stillnessStartDate = nil
+        removeHomeGeofence()
+        homeGeofenceCenter = nil
 
         // Core settings
         locationManager.desiredAccuracy = accuracyForConfig()
@@ -639,18 +632,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         guard config.stillnessTimeoutMin > 0 else { return }
 
         let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
-
-        // Calculate remaining time based on earliest stillness signal
-        let now = Date()
-        let gpsElapsed = now.timeIntervalSince(lastMovementDate)
-        let accelElapsed: TimeInterval
-        if motionDetectorReportsStill, let start = stillnessStartDate {
-            accelElapsed = now.timeIntervalSince(start)
-        } else {
-            accelElapsed = 0
-        }
-        let maxElapsed = max(gpsElapsed, accelElapsed)
-        let remaining = max(1.0, timeout - maxElapsed)
+        let elapsed = Date().timeIntervalSince(lastMovementDate)
+        let remaining = max(1.0, timeout - elapsed)
 
         stopDetectionTimer = Timer.scheduledTimer(
             withTimeInterval: remaining,
@@ -668,36 +651,29 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private func handleStopTimeout() {
         guard isTracking, isMoving else { return }
 
-        let now = Date()
         let timeout = TimeInterval(config.stillnessTimeoutMin * 60)
+        let elapsed = Date().timeIntervalSince(lastMovementDate)
 
-        // Condition A: GPS speed has been < 0.5 for stillnessTimeoutMin
-        let gpsStillElapsed = now.timeIntervalSince(lastMovementDate)
-        let gpsStill = gpsStillElapsed >= timeout
-
-        // Condition B: MotionDetector reports still for stillnessTimeoutMin
-        let accelStill: Bool
-        if motionDetectorReportsStill, let start = stillnessStartDate {
-            accelStill = now.timeIntervalSince(start) >= timeout
-        } else {
-            accelStill = false
-        }
-
-        if gpsStill || accelStill {
+        if elapsed >= timeout {
+            // GPS accuracy check: if too poor, delay and retry
+            if let loc = lastEmittedLocation,
+               loc.horizontalAccuracy > config.stillnessRadiusMeters * 2 {
+                LibreLocationPlugin.log("GPS accuracy \(loc.horizontalAccuracy)m too poor for stationary transition, retrying in 30s")
+                stopStopDetectionTimer()
+                stopDetectionTimer = Timer.scheduledTimer(
+                    withTimeInterval: 30.0,
+                    repeats: false
+                ) { [weak self] _ in
+                    self?.handleStopTimeout()
+                }
+                return
+            }
             transitionToStationary()
         } else {
-            // Reschedule with remaining time
-            let gpsRemaining = gpsStill ? Double.greatestFiniteMagnitude : (timeout - gpsStillElapsed)
-            let accelRemaining: Double
-            if motionDetectorReportsStill, let start = stillnessStartDate {
-                accelRemaining = timeout - now.timeIntervalSince(start)
-            } else {
-                accelRemaining = Double.greatestFiniteMagnitude
-            }
-            let nextCheck = max(1.0, min(gpsRemaining, accelRemaining))
+            let remaining = max(1.0, timeout - elapsed)
             stopStopDetectionTimer()
             stopDetectionTimer = Timer.scheduledTimer(
-                withTimeInterval: nextCheck,
+                withTimeInterval: remaining,
                 repeats: false
             ) { [weak self] _ in
                 self?.handleStopTimeout()
@@ -705,19 +681,67 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    // MARK: - State Transitions
+
     private func transitionToStationary() {
         isMoving = false
-
-        // Emit motion change with position
         emitMotionChange(isMoving: false)
 
-        // Stop active GPS, keep significant location changes + heartbeat
+        // Stop active GPS
         locationManager.stopUpdatingLocation()
+
+        // Keep significant location changes as backup wake trigger
         locationManager.startMonitoringSignificantLocationChanges()
 
-        if config.mode != 0 {
-            locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-            locationManager.distanceFilter = max(config.stillnessRadiusMeters, 50.0)
+        // Drop home geofence at current position
+        if let loc = lastEmittedLocation {
+            dropHomeGeofence(at: loc)
+        }
+
+        // Stop the stop-detection timer (we're already stopped)
+        stopStopDetectionTimer()
+    }
+
+    private func transitionToMoving() {
+        guard isTracking else { return }
+        isMoving = true
+        emitMotionChange(isMoving: true)
+
+        // Remove home geofence
+        removeHomeGeofence()
+        homeGeofenceCenter = nil
+
+        // Start active GPS
+        locationManager.desiredAccuracy = accuracyForConfig()
+        locationManager.distanceFilter = config.distanceFilter
+        locationManager.startUpdatingLocation()
+
+        // Restart stop detection timer
+        lastMovementDate = Date()
+        restartStopDetectionTimer()
+    }
+
+    // MARK: - Home Geofence
+
+    private func dropHomeGeofence(at location: CLLocation) {
+        homeGeofenceCenter = location
+        let radius = max(config.stillnessRadiusMeters, 100.0) // iOS min effective ~100m
+        let region = CLCircularRegion(
+            center: location.coordinate,
+            radius: min(radius, locationManager.maximumRegionMonitoringDistance),
+            identifier: Self.homeGeofenceId
+        )
+        region.notifyOnEntry = false
+        region.notifyOnExit = true
+        locationManager.startMonitoring(for: region)
+        LibreLocationPlugin.log("Dropped home geofence at \(location.coordinate) radius=\(radius)m")
+    }
+
+    private func removeHomeGeofence() {
+        for region in locationManager.monitoredRegions {
+            if region.identifier == Self.homeGeofenceId {
+                locationManager.stopMonitoring(for: region)
+            }
         }
     }
 
