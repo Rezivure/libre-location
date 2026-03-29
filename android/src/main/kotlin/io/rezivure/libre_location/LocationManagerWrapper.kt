@@ -28,6 +28,7 @@ class LocationManagerWrapper(
     companion object {
         private const val TAG = "LibreLocationMgr"
         private const val DUPLICATE_TIME_THRESHOLD = 1000L
+        private const val GATE_CHECK_COOLDOWN_MS = 60_000L
     }
 
     // GPS filter config
@@ -55,6 +56,9 @@ class LocationManagerWrapper(
 
     // Motion change tracking — allows first emission after motion state change to bypass time filter
     private var motionChangeOccurred = false
+
+    // Cooldown for distance gate checks to prevent indoor motion spam
+    private var lastGateCheckTime: Long = 0
 
     private var providerChangeCallback: ((Map<String, Any?>) -> Unit)? = null
     private var locationUpdateListeners = mutableListOf<(Location) -> Unit>()
@@ -142,6 +146,7 @@ class LocationManagerWrapper(
         this.config = config
         isTracking = true
         isMoving = true
+        lastGateCheckTime = 0
         kalmanFilter.reset()
         locationFilterEnabled = config.locationFilterEnabled
         maxAccuracy = config.maxAccuracy
@@ -292,6 +297,13 @@ class LocationManagerWrapper(
         if (!isTracking) return
         if (isMoving) return  // already moving, no-op
 
+        val now = System.currentTimeMillis()
+        if (now - lastGateCheckTime < GATE_CHECK_COOLDOWN_MS) {
+            Log.d(TAG, "Motion gate cooldown active — ignoring (${now - lastGateCheckTime}ms since last check)")
+            return
+        }
+        lastGateCheckTime = now
+
         Log.d(TAG, "Motion detected (gated) — requesting network location for distance check")
 
         requestSingleNetworkLocation { location ->
@@ -353,6 +365,7 @@ class LocationManagerWrapper(
         isMoving = true
         homeGeofenceCenter = null
         motionChangeOccurred = true
+        lastGateCheckTime = 0
         Log.d(TAG, "Transitioning to MOVING — re-engaging GPS")
 
         // Remove passive listener
