@@ -20,4 +20,18 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: dart pub publish --force
+      - name: Check if version already published
+        id: version_check
+        run: |
+          LOCAL_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pub.dev/api/packages/libre_location/versions/$LOCAL_VERSION")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Version $LOCAL_VERSION already published — skipping"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Version $LOCAL_VERSION not yet published — publishing"
+          fi
+      - name: Publish to pub.dev
+        if: steps.version_check.outputs.skip != 'true'
+        run: dart pub publish --force
