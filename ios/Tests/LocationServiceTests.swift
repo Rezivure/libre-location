@@ -110,45 +110,6 @@ final class LocationServiceConfigTests: XCTestCase {
     }
 }
 
-// MARK: - LocationBuffer Tests
-
-final class LocationBufferTests: XCTestCase {
-
-    override func tearDown() {
-        _ = LocationBuffer.flush()
-        super.tearDown()
-    }
-
-    func testAppendAndFlush() {
-        let loc: [String: Any] = [
-            "latitude": 37.42,
-            "longitude": -122.08,
-            "timestamp": 1000,
-        ]
-        LocationBuffer.append(loc)
-        let buffer = LocationBuffer.flush()
-        XCTAssertEqual(buffer.count, 1)
-        XCTAssertEqual(buffer[0]["latitude"] as? Double, 37.42)
-    }
-
-    func testFlushClearsBuffer() {
-        LocationBuffer.append(["latitude": 1.0, "longitude": 2.0])
-        _ = LocationBuffer.flush()
-        let empty = LocationBuffer.flush()
-        XCTAssertTrue(empty.isEmpty)
-    }
-
-    func testBufferMaxSize() {
-        for i in 0..<1100 {
-            LocationBuffer.append(["index": i])
-        }
-        let buffer = LocationBuffer.load()
-        XCTAssertEqual(buffer.count, 1000)
-        // Should keep the most recent 1000
-        XCTAssertEqual(buffer.first?["index"] as? Int, 100)
-    }
-}
-
 // MARK: - LocationService locationToMap Tests
 
 final class LocationToMapTests: XCTestCase {

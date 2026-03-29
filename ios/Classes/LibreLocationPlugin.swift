@@ -156,17 +156,8 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         // Restore tracking if app was relaunched by the OS
         instance.locationService?.restoreTrackingIfNeeded()
 
-        // Flush any buffered locations from SQLite database
-        let buffered = instance.locationService?.flushUndeliveredLocations() ?? []
-        for loc in buffered {
-            instance.positionStreamHandler?.send(loc)
-        }
-
-        // Also flush legacy UserDefaults buffer (migration)
-        let legacyBuffered = LocationBuffer.flush()
-        for loc in legacyBuffered {
-            instance.positionStreamHandler?.send(loc)
-        }
+        // Flush any buffered locations from SQLite database (throttled)
+        instance.flushBufferedLocationsThrottled()
 
         registrar.addMethodCallDelegate(instance, channel: channel)
         registrar.addApplicationDelegate(instance)
@@ -491,6 +482,31 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    // MARK: - Throttled Buffer Flush
+
+    /// Flush buffered locations in batches of 50 with 100ms delay between batches
+    /// to avoid overwhelming the Flutter event channel.
+    private func flushBufferedLocationsThrottled() {
+        let buffered = locationService?.flushUndeliveredLocations() ?? []
+        guard !buffered.isEmpty else { return }
+
+        let batchSize = 50
+        let batches = stride(from: 0, to: buffered.count, by: batchSize).map {
+            Array(buffered[$0..<min($0 + batchSize, buffered.count)])
+        }
+
+        Self.log("Flushing \(buffered.count) buffered locations in \(batches.count) batches")
+
+        for (index, batch) in batches.enumerated() {
+            let delay = Double(index) * 0.1 // 100ms between batches
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                for loc in batch {
+                    self?.positionStreamHandler?.send(loc)
+                }
+            }
+        }
+    }
+
     // MARK: - Power Save Observer
 
     @objc private func powerStateDidChange() {
@@ -515,12 +531,8 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
     }
 
     public func applicationWillEnterForeground(_ application: UIApplication) {
-        // Flush undelivered locations from DB when app returns to foreground
-        if let undelivered = locationService?.flushUndeliveredLocations() {
-            for loc in undelivered {
-                positionStreamHandler?.send(loc)
-            }
-        }
+        // Flush undelivered locations from DB when app returns to foreground (throttled)
+        flushBufferedLocationsThrottled()
     }
 
     public func applicationWillTerminate(_ application: UIApplication) {

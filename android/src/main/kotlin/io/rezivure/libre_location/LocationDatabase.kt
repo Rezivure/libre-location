@@ -19,6 +19,7 @@ class LocationDatabase(context: Context) :
     companion object {
         private const val DATABASE_NAME = "libre_location.db"
         private const val DATABASE_VERSION = 2
+        private const val MAX_RECORDS = 500
 
         private const val TABLE_LOCATIONS = "locations"
         private const val COL_ID = "id"
@@ -103,7 +104,9 @@ class LocationDatabase(context: Context) :
             put(COL_ACTIVITY_CONFIDENCE, activityConfidence)
             put(COL_DELIVERED, 0)
         }
-        return writableDatabase.insert(TABLE_LOCATIONS, null, values)
+        val id = writableDatabase.insert(TABLE_LOCATIONS, null, values)
+        enforceMaxRecords()
+        return id
     }
 
     /**
@@ -124,7 +127,23 @@ class LocationDatabase(context: Context) :
             put(COL_ACTIVITY_CONFIDENCE, (map["activityConfidence"] as? Number)?.toInt() ?: 0)
             put(COL_DELIVERED, 0)
         }
-        return writableDatabase.insert(TABLE_LOCATIONS, null, values)
+        val id = writableDatabase.insert(TABLE_LOCATIONS, null, values)
+        enforceMaxRecords()
+        return id
+    }
+
+    /**
+     * Enforces the maximum record cap, deleting oldest records when exceeded.
+     */
+    private fun enforceMaxRecords() {
+        val count = getRecordCount()
+        if (count > MAX_RECORDS) {
+            writableDatabase.execSQL("""
+                DELETE FROM $TABLE_LOCATIONS WHERE $COL_ID NOT IN (
+                    SELECT $COL_ID FROM $TABLE_LOCATIONS ORDER BY $COL_TIMESTAMP DESC LIMIT $MAX_RECORDS
+                )
+            """)
+        }
     }
 
     /**
