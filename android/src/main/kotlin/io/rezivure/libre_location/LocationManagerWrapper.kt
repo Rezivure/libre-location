@@ -125,6 +125,17 @@ class LocationManagerWrapper(
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     }
 
+    /** Passive provider listener for stationary mode — checks distance from home on each update. */
+    private val passiveListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            if (!isMoving) checkDistanceFromHome(location)
+        }
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+        @Deprecated("Deprecated in API")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+    }
+
     private val providerCheckRunnable = object : Runnable {
         override fun run() {
             if (!isTracking) return
@@ -184,20 +195,25 @@ class LocationManagerWrapper(
     @SuppressLint("MissingPermission")
     fun setConfig(newConfig: TrackingConfig) {
         val wasTracking = isTracking
-        if (wasTracking) {
-            locationManager.removeUpdates(primaryListener)
-            locationManager.removeUpdates(secondaryListener)
-            stopHeartbeat()
-        }
-
         this.config = newConfig
+        locationFilterEnabled = newConfig.locationFilterEnabled
+        maxAccuracy = newConfig.maxAccuracy
+        maxSpeed = newConfig.maxSpeed
 
         if (wasTracking) {
-            registerProviders()
+            // Only re-register providers if currently moving (GPS active).
+            // When stationary, GPS is off and we must NOT re-engage it.
+            if (isMoving) {
+                locationManager.removeUpdates(primaryListener)
+                locationManager.removeUpdates(secondaryListener)
+                registerProviders()
+            }
+            // Heartbeat can always be updated
+            stopHeartbeat()
             startHeartbeat()
         }
 
-        Log.d(TAG, "Config updated dynamically")
+        Log.d(TAG, "Config updated dynamically (isMoving=$isMoving)")
     }
 
     @SuppressLint("MissingPermission")
@@ -586,8 +602,14 @@ class LocationManagerWrapper(
     private fun requestUpdatesIfAvailable(provider: String, listener: LocationListener) {
         try {
             if (locationManager.isProviderEnabled(provider) || provider == LocationManager.PASSIVE_PROVIDER) {
+                // Enforce 50m minimum distance filter for active providers (GPS/network) while moving
+                val effectiveDistanceFilter = if (provider != LocationManager.PASSIVE_PROVIDER && isMoving) {
+                    maxOf(config.distanceFilter, 50f)
+                } else {
+                    config.distanceFilter
+                }
                 locationManager.requestLocationUpdates(
-                    provider, config.intervalMs, config.distanceFilter, listener, Looper.getMainLooper()
+                    provider, config.intervalMs, effectiveDistanceFilter, listener, Looper.getMainLooper()
                 )
             }
         } catch (e: Exception) {

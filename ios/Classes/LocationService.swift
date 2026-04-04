@@ -199,7 +199,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         config.save()
 
         if isTracking {
-            applyConfigAndStart()
+            applyConfigToRunningSession()
         }
     }
 
@@ -483,7 +483,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         // Core settings
         locationManager.desiredAccuracy = accuracyForConfig()
-        locationManager.distanceFilter = config.distanceFilter
+        locationManager.distanceFilter = max(config.distanceFilter, 50.0) // enforce 50m min while moving
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.showsBackgroundLocationIndicator = config.showsBackgroundLocationIndicator
         locationManager.pausesLocationUpdatesAutomatically = config.pausesLocationUpdatesAutomatically
@@ -524,6 +524,33 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         // Attempt deferred updates for battery savings
         attemptDeferredUpdates()
+    }
+
+    /// Apply config changes to a running session WITHOUT resetting motion state.
+    /// This is called by setConfig() when tracking is active.
+    /// Unlike applyConfigAndStart(), this preserves isMoving, home geofence, and stop detection state.
+    private func applyConfigToRunningSession() {
+        // Update CLLocationManager properties only if currently in moving state (GPS active)
+        if isMoving {
+            locationManager.desiredAccuracy = accuracyForConfig()
+            locationManager.distanceFilter = max(config.distanceFilter, 50.0) // enforce 50m min while moving
+            locationManager.showsBackgroundLocationIndicator = config.showsBackgroundLocationIndicator
+            locationManager.pausesLocationUpdatesAutomatically = config.pausesLocationUpdatesAutomatically
+            if let actType = CLActivityType(rawValue: config.activityType) {
+                locationManager.activityType = actType
+            }
+        }
+        // Heartbeat and keepAwake can always be updated
+        configureHeartbeat()
+        if config.keepAwake {
+            startKeepAwake()
+        } else {
+            stopKeepAwake()
+        }
+        // Update stop detection timer if timeout changed
+        if isMoving && config.stillnessTimeoutMin > 0 {
+            restartStopDetectionTimer()
+        }
     }
 
     private func accuracyForConfig() -> CLLocationAccuracy {
@@ -713,7 +740,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         // Start active GPS
         locationManager.desiredAccuracy = accuracyForConfig()
-        locationManager.distanceFilter = config.distanceFilter
+        locationManager.distanceFilter = max(config.distanceFilter, 50.0) // enforce 50m min while moving
         locationManager.startUpdatingLocation()
 
         // Restart stop detection timer
