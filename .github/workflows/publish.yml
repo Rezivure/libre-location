@@ -12,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version_to_publish: ${{ steps.version.outputs.version_to_publish }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +28,7 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - name: Determine version bump and push tag
+        id: version
         run: |
           CURRENT=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
@@ -72,7 +76,32 @@ jobs:
           git tag "v$VERSION_TO_TAG" 2>/dev/null || true
           git push --tags
 
-  publish:
+          echo "version_to_publish=$VERSION_TO_TAG" >> "$GITHUB_OUTPUT"
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+
+  publish-from-main:
+    if: github.ref_type == 'branch'
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.prepare-release.outputs.version_to_publish }}
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Publish package
+        run: dart pub publish --force
+
+  publish-from-tag:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
