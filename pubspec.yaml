@@ -3,7 +3,7 @@ description: >-
   Production-grade background location tracking for Flutter without Google Play
   Services. Pure AOSP LocationManager on Android, CoreLocation on iOS. Built for
   privacy-focused apps, GrapheneOS, CalyxOS, and degoogled devices.
-version: 0.2.0
+version: 0.2.1
 homepage: https://github.com/Rezivure/libre-location
 repository: https://github.com/Rezivure/libre-location
 issue_tracker: https://github.com/Rezivure/libre-location/issues

@@ -1,3 +1,8 @@
+## 0.2.1
+
+* Bump package version to trigger a fresh tag-based pub.dev publish
+* Keep 0.2.0 fixes and release automation improvements intact
+
 ## 0.2.0
 
 * Preserve motion state when updating config with `setConfig`
