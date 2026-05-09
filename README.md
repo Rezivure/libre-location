@@ -514,7 +514,7 @@ For comprehensive guidance, see [dontkillmyapp.com](https://dontkillmyapp.com).
 
 ### Android
 - **LocationManagerWrapper**: Core AOSP LocationManager integration with multi-provider support
-- **LocationService**: Foreground service with START_STICKY, wake lock, AlarmManager heartbeat
+- **LocationService**: Foreground service with START_STICKY, wake lock, in-process Handler-based heartbeat
 - **MotionDetector**: Accelerometer variance + step counter + GPS speed + significant motion sensor
 - **GeofenceManager**: Custom distance-based geofence checking on every location update
 - **HeadlessCallbackDispatcher**: FlutterEngine in headless mode for post-termination callbacks
