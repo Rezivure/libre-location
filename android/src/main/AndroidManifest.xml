@@ -19,10 +19,6 @@
     <!-- Wake lock for preventSuspend -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Exact alarms for heartbeat (Android 12+) -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-
     <!-- Activity recognition (if using system API) -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
@@ -53,18 +49,6 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
-
-        <!-- Heartbeat alarm receiver for Doze-resistant periodic wakeups -->
-        <receiver
-            android:name=".HeartbeatAlarmReceiver"
-            android:enabled="true"
-            android:exported="false" />
-
-        <!-- Watchdog alarm receiver for self-healing after OEM kills -->
-        <receiver
-            android:name=".WatchdogAlarmReceiver"
-            android:enabled="true"
-            android:exported="false" />
 
     </application>
 </manifest>

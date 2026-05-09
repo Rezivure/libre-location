@@ -1,3 +1,13 @@
+## 0.3.0
+
+* Removed `SCHEDULE_EXACT_ALARM` and `USE_EXACT_ALARM` permissions from the Android manifest. Google Play restricts these to calendar/alarm-clock apps and was rejecting uploads of consuming apps.
+* Replaced the `AlarmManager`-based heartbeat with an in-process `Handler.postDelayed` loop inside `LocationService`. Heartbeats now fire while the foreground service is alive (which is the normal case — the ongoing notification + battery-optimization exemption keep it running). Heartbeats may pause during deep Doze, which is a behaviour change from 0.2.x.
+* Removed `WatchdogAlarmReceiver` (the 15-minute OEM-kill recovery alarm). OEM-kill resilience now relies solely on the foreground service notification + `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+* Removed `HeartbeatAlarmReceiver`; its headless-callback dispatch logic moved into `LocationService.emitHeartbeat()`.
+* Removed `LocationService.ACTION_HEARTBEAT_ALARM` (no longer dispatched).
+
+**Migration notes for consumers:** No API changes. If you were relying on heartbeats firing during deep Doze, you'll see them pause until the next Doze maintenance window or until the user interacts with the device. For most use cases this is acceptable — the foreground service's location updates continue independently of the heartbeat tick.
+
 ## 0.2.1
 
 * Bump package version to trigger a fresh tag-based pub.dev publish

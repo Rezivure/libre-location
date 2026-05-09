@@ -1,7 +1,6 @@
 package io.rezivure.libre_location
 
 import android.annotation.SuppressLint
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,9 +9,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -23,7 +23,10 @@ import androidx.core.app.NotificationCompat
  * - START_STICKY for automatic restart after system kill
  * - Configurable notification (title, text, priority, sticky)
  * - Partial wake lock for CPU-intensive operations (heartbeat, motion detection)
- * - Heartbeat alarm via AlarmManager for Doze-resistant periodic wakeups
+ * - In-process heartbeat via Handler.postDelayed (no AlarmManager — avoids
+ *   Google Play exact-alarm policy restrictions). Heartbeats fire while the
+ *   foreground service is alive; may pause during Doze, but the service's
+ *   ongoing notification + battery-optimization exemption keep it running.
  * - Android 12+ foreground service type declarations
  * - Headless mode support: restores tracking config on restart without Flutter engine
  */
@@ -37,7 +40,6 @@ class LocationService : Service() {
         const val ACTION_START = "io.rezivure.libre_location.START"
         const val ACTION_STOP = "io.rezivure.libre_location.STOP"
         const val ACTION_UPDATE_NOTIFICATION = "io.rezivure.libre_location.UPDATE_NOTIFICATION"
-        const val ACTION_HEARTBEAT_ALARM = "io.rezivure.libre_location.HEARTBEAT_ALARM"
 
         const val EXTRA_NOTIFICATION_TITLE = "notificationTitle"
         const val EXTRA_NOTIFICATION_BODY = "notificationBody"
@@ -58,6 +60,13 @@ class LocationService : Service() {
     private var notificationSticky = true
     private var heartbeatIntervalSec = 0L
     private var keepAwake = false
+    private val heartbeatHandler = Handler(Looper.getMainLooper())
+    private val heartbeatRunnable = object : Runnable {
+        override fun run() {
+            emitHeartbeat()
+            heartbeatHandler.postDelayed(this, heartbeatIntervalSec * 1000L)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,12 +89,6 @@ class LocationService : Service() {
                 notificationBody = intent.getStringExtra(EXTRA_NOTIFICATION_BODY) ?: notificationBody
                 notificationPriority = intent.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority)
                 updateNotification()
-                return START_STICKY
-            }
-            ACTION_HEARTBEAT_ALARM -> {
-                // Woken by AlarmManager — the LocationManagerWrapper heartbeat handler
-                // will emit a location via its own callback. We just need to stay alive.
-                Log.d(TAG, "Heartbeat alarm received")
                 return START_STICKY
             }
         }
@@ -111,9 +114,9 @@ class LocationService : Service() {
             acquireWakeLock()
         }
 
-        // Schedule heartbeat alarm for Doze resistance
+        // Start the in-process heartbeat loop
         if (heartbeatIntervalSec > 0) {
-            scheduleHeartbeatAlarm()
+            startHeartbeatLoop()
         }
 
         Log.d(TAG, "LocationService started (sticky=$notificationSticky, " +
@@ -125,7 +128,7 @@ class LocationService : Service() {
     override fun onDestroy() {
         instance = null
         releaseWakeLock()
-        cancelHeartbeatAlarm()
+        stopHeartbeatLoop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         Log.d(TAG, "LocationService destroyed")
         super.onDestroy()
@@ -227,39 +230,42 @@ class LocationService : Service() {
         }
     }
 
-    // ----- Heartbeat Alarm (Doze-resistant) -----
+    // ----- Heartbeat (in-process, Handler-based) -----
 
-    private fun scheduleHeartbeatAlarm() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, HeartbeatAlarmReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val intervalMs = heartbeatIntervalSec * 1000L
-        val triggerAt = SystemClock.elapsedRealtime() + intervalMs
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // setExactAndAllowWhileIdle for Doze mode
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
-            )
-        } else {
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
-            )
-        }
-        Log.d(TAG, "Heartbeat alarm scheduled: ${heartbeatIntervalSec}s")
+    private fun startHeartbeatLoop() {
+        heartbeatHandler.postDelayed(heartbeatRunnable, heartbeatIntervalSec * 1000L)
+        Log.d(TAG, "Heartbeat loop started: ${heartbeatIntervalSec}s")
     }
 
-    private fun cancelHeartbeatAlarm() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, HeartbeatAlarmReceiver::class.java)
-        val pendingIntent = PendingIntent.getBroadcast(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        alarmManager.cancel(pendingIntent)
+    private fun stopHeartbeatLoop() {
+        heartbeatHandler.removeCallbacks(heartbeatRunnable)
+    }
+
+    private fun emitHeartbeat() {
+        Log.d(TAG, "Heartbeat tick")
+
+        // Dispatch to headless Dart engine if registered (when Flutter UI is gone).
+        if (HeadlessCallbackDispatcher.hasCallback(this)) {
+            val locationManager = getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            try {
+                val lastKnown = locationManager?.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                    ?: locationManager?.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                if (lastKnown != null) {
+                    val posMap = mapOf(
+                        "latitude" to lastKnown.latitude,
+                        "longitude" to lastKnown.longitude,
+                        "altitude" to lastKnown.altitude,
+                        "accuracy" to lastKnown.accuracy.toDouble(),
+                        "speed" to lastKnown.speed.toDouble(),
+                        "heading" to lastKnown.bearing.toDouble(),
+                        "timestamp" to lastKnown.time,
+                        "provider" to (lastKnown.provider ?: "unknown"),
+                    )
+                    HeadlessCallbackDispatcher.dispatchHeartbeat(this, mapOf("position" to posMap))
+                }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "No permission for headless location: ${e.message}")
+            }
+        }
     }
 }

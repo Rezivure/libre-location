@@ -475,9 +475,6 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         // Set log level
         LibreLocationLogger.logLevel = config.logLevel
 
-        // Schedule watchdog alarm for self-healing
-        WatchdogAlarmReceiver.schedule(context)
-
         LibreLocationLogger.info("Tracking started: mode=${config.mode}, accuracy=${config.accuracy}")
         Log.d(TAG, "Tracking started with config: mode=${config.mode}, accuracy=${config.accuracy}")
         result.success(null)
@@ -496,7 +493,6 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         context.stopService(serviceIntent)
 
         TrackingConfig.setTrackingEnabled(context, false)
-        WatchdogAlarmReceiver.cancel(context)
         currentConfig = null
 
         // Enforce retention on stop
