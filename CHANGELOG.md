@@ -1,3 +1,16 @@
+## 0.4.0
+
+iOS battery-profile release: Life360-style stationary/motion power management.
+
+* **Motion-driven GPS re-arming (iOS).** A confident `CMMotionActivity` report (walking/running/cycling/automotive) while stationary now re-arms continuous GPS immediately, instead of waiting for a significant-location-change tick or geofence exit. Raw accelerometer motion still never wakes GPS. Disable with `motionActivityWake: false`.
+* **Speed-adaptive accuracy (iOS).** At driving speed (≥10 m/s) `desiredAccuracy` relaxes to `kCLLocationAccuracyNearestTenMeters`; it restores to the preset accuracy below 7 m/s (hysteresis band avoids flapping). Disable with `speedAdaptiveAccuracy: false`.
+* **Low-battery SLC-only mode (iOS).** When battery ≤ 20% and not charging, tracking drops to significant-location-changes only regardless of motion state, and restores on charge or recovery past 25%. Configure with `lowBatterySlcOnly` / `lowBatteryThreshold`.
+* **`pausesLocationUpdatesAutomatically` is now safe.** `locationManagerDidPauseLocationUpdates` folds the native pause into the plugin's stationary mode (SLC + exit geofence armed), so streaming resumes on movement. Previously a native pause could silently stall updates until the stillness timeout.
+* **Upgrade-safe persisted config (iOS).** The persisted tracking config now decodes field-by-field with defaults; previously a plugin upgrade that added config fields caused the whole persisted config to fail decoding, losing tracking restore after termination.
+* Android: the new config keys are accepted and ignored (no behavior change); Android already runs its own foreground-service power model.
+
+**Migration notes for consumers:** No breaking API changes. All new behaviors default ON for iOS; pass the new `NativeConfig` flags to opt out.
+
 ## 0.3.0
 
 * Removed `SCHEDULE_EXACT_ALARM` and `USE_EXACT_ALARM` permissions from the Android manifest. Google Play restricts these to calendar/alarm-clock apps and was rejecting uploads of consuming apps.

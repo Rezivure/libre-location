@@ -25,7 +25,43 @@ struct LocationServiceConfig: Codable {
     var maxAccuracy: Double = 100.0   // meters
     var maxSpeed: Double = 83.33      // m/s (~300 km/h)
 
+    // Power policy
+    var motionActivityWake: Bool = true       // confident activity re-arms GPS when stationary
+    var speedAdaptiveAccuracy: Bool = true    // driving speed relaxes desiredAccuracy
+    var lowBatterySlcOnly: Bool = true        // below threshold → SLC-only regardless of motion
+    var lowBatteryThreshold: Double = 0.20    // 0.0–1.0
+
     static let userDefaultsKey = "libre_location_config"
+
+    init() {}
+
+    // decodeIfPresent everywhere: a config persisted by an older plugin
+    // version must still decode after upgrade, or tracking restore dies.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = LocationServiceConfig()
+        accuracy = try c.decodeIfPresent(Int.self, forKey: .accuracy) ?? d.accuracy
+        intervalMs = try c.decodeIfPresent(Int.self, forKey: .intervalMs) ?? d.intervalMs
+        distanceFilter = try c.decodeIfPresent(Double.self, forKey: .distanceFilter) ?? d.distanceFilter
+        mode = try c.decodeIfPresent(Int.self, forKey: .mode) ?? d.mode
+        enableMotionDetection = try c.decodeIfPresent(Bool.self, forKey: .enableMotionDetection) ?? d.enableMotionDetection
+        stillnessTimeoutMin = try c.decodeIfPresent(Int.self, forKey: .stillnessTimeoutMin) ?? d.stillnessTimeoutMin
+        stillnessRadiusMeters = try c.decodeIfPresent(Double.self, forKey: .stillnessRadiusMeters) ?? d.stillnessRadiusMeters
+        heartbeatInterval = try c.decodeIfPresent(Int.self, forKey: .heartbeatInterval) ?? d.heartbeatInterval
+        pausesLocationUpdatesAutomatically = try c.decodeIfPresent(Bool.self, forKey: .pausesLocationUpdatesAutomatically) ?? d.pausesLocationUpdatesAutomatically
+        activityType = try c.decodeIfPresent(Int.self, forKey: .activityType) ?? d.activityType
+        stopOnTerminate = try c.decodeIfPresent(Bool.self, forKey: .stopOnTerminate) ?? d.stopOnTerminate
+        keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? d.keepAwake
+        significantChangesOnly = try c.decodeIfPresent(Bool.self, forKey: .significantChangesOnly) ?? d.significantChangesOnly
+        showsBackgroundLocationIndicator = try c.decodeIfPresent(Bool.self, forKey: .showsBackgroundLocationIndicator) ?? d.showsBackgroundLocationIndicator
+        locationFilterEnabled = try c.decodeIfPresent(Bool.self, forKey: .locationFilterEnabled) ?? d.locationFilterEnabled
+        maxAccuracy = try c.decodeIfPresent(Double.self, forKey: .maxAccuracy) ?? d.maxAccuracy
+        maxSpeed = try c.decodeIfPresent(Double.self, forKey: .maxSpeed) ?? d.maxSpeed
+        motionActivityWake = try c.decodeIfPresent(Bool.self, forKey: .motionActivityWake) ?? d.motionActivityWake
+        speedAdaptiveAccuracy = try c.decodeIfPresent(Bool.self, forKey: .speedAdaptiveAccuracy) ?? d.speedAdaptiveAccuracy
+        lowBatterySlcOnly = try c.decodeIfPresent(Bool.self, forKey: .lowBatterySlcOnly) ?? d.lowBatterySlcOnly
+        lowBatteryThreshold = try c.decodeIfPresent(Double.self, forKey: .lowBatteryThreshold) ?? d.lowBatteryThreshold
+    }
 
     func save() {
         if let data = try? JSONEncoder().encode(self) {
@@ -91,6 +127,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // Kalman filter
     private var kalmanFilter = KalmanFilter()
 
+    // Low-battery SLC-only mode (transient, re-evaluated from battery state)
+    private(set) var lowBatteryActive = false
+
+    // Speed-adaptive accuracy currently applied (nil = preset accuracy)
+    private var appliedAccuracy: CLLocationAccuracy?
+
     // State persistence
     private static let isTrackingKey = "libre_location_is_tracking"
 
@@ -110,6 +152,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         locationManager.delegate = self
         // Enable battery monitoring so we can include level/charging in every position
         UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(batteryDidChange),
+            name: UIDevice.batteryLevelDidChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(batteryDidChange),
+            name: UIDevice.batteryStateDidChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - Database Flush
@@ -160,6 +218,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     func stopTracking() {
         guard isTracking else { return }
         isTracking = false
+        lowBatteryActive = false
+        appliedAccuracy = nil
         UserDefaults.standard.set(false, forKey: Self.isTrackingKey)
         LocationServiceConfig.clear()
 
@@ -195,6 +255,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if let v = args["locationFilterEnabled"] as? Bool { config.locationFilterEnabled = v }
         if let v = args["maxAccuracy"] as? Double { config.maxAccuracy = v }
         if let v = args["maxSpeed"] as? Double { config.maxSpeed = v }
+        if let v = args["motionActivityWake"] as? Bool { config.motionActivityWake = v }
+        if let v = args["speedAdaptiveAccuracy"] as? Bool { config.speedAdaptiveAccuracy = v }
+        if let v = args["lowBatterySlcOnly"] as? Bool { config.lowBatterySlcOnly = v }
+        if let v = args["lowBatteryThreshold"] as? Double { config.lowBatteryThreshold = v }
 
         config.save()
 
@@ -258,7 +322,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     // MARK: - Motion State
 
     /// Called by MotionDetector — NO-OP for GPS wake.
-    /// Accelerometer motion must NOT re-engage GPS. Only geofence exit or SLC can wake.
+    /// Raw accelerometer motion must NOT re-engage GPS (too noisy). Activity
+    /// recognition (onActivityDetected), geofence exit, or SLC can wake.
     func onMotionDetected() {
         // No-op: accelerometer does not wake GPS
     }
@@ -267,6 +332,56 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// Stop detection is GPS-speed-only now.
     func onStillnessDetected() {
         // No-op: stop detection uses GPS speed only
+    }
+
+    /// Activity-recognition wake: a confident walking/running/cycling/driving
+    /// report while stationary re-arms continuous GPS without waiting for an
+    /// SLC tick or geofence exit. Stillness reports stay advisory — GPS-speed
+    /// stop detection owns the stationary edge.
+    func onActivityDetected(activity: String, confidence: Int) {
+        guard isTracking, config.motionActivityWake, !lowBatteryActive, !isMoving else { return }
+        switch activity {
+        case "walking", "running", "on_bicycle", "in_vehicle":
+            LibreLocationPlugin.log("Activity \(activity) (\(confidence)%) while stationary — re-arming GPS")
+            transitionToMoving()
+        default:
+            break
+        }
+    }
+
+    // MARK: - Low-Battery Power Save
+
+    @objc private func batteryDidChange() {
+        evaluateBatteryPolicy()
+    }
+
+    /// Below the threshold (and not charging) drop to SLC-only regardless of
+    /// motion state — the Life360 behavior. Restores on charge or recovery
+    /// past threshold + 5% (hysteresis).
+    private func evaluateBatteryPolicy() {
+        guard config.lowBatterySlcOnly, isTracking else { return }
+        let device = UIDevice.current
+        let level = Double(device.batteryLevel)
+        guard level >= 0 else { return }  // -1 = unknown (simulator)
+        let charging = device.batteryState == .charging || device.batteryState == .full
+
+        if !lowBatteryActive && !charging && level <= config.lowBatteryThreshold {
+            lowBatteryActive = true
+            LibreLocationPlugin.log("Battery \(Int(level * 100))% — entering SLC-only power save")
+            locationManager.stopUpdatingLocation()
+            locationManager.startMonitoringSignificantLocationChanges()
+            stopStopDetectionTimer()
+        } else if lowBatteryActive && (charging || level >= config.lowBatteryThreshold + 0.05) {
+            lowBatteryActive = false
+            LibreLocationPlugin.log("Battery recovered (\(Int(level * 100))%, charging=\(charging)) — leaving SLC-only power save")
+            if isMoving {
+                appliedAccuracy = nil
+                locationManager.desiredAccuracy = accuracyForConfig()
+                locationManager.startUpdatingLocation()
+                lastMovementDate = Date()
+                restartStopDetectionTimer()
+            }
+        }
     }
 
     /// Manually override motion state (setMoving API).
@@ -349,9 +464,14 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if !isMoving, let homeCenter = homeGeofenceCenter {
             let distance = location.distance(from: homeCenter)
             if distance > config.stillnessRadiusMeters {
-                LibreLocationPlugin.log("SLC exit detected — distance \(distance)m from home")
-                transitionToMoving()
-                return
+                if lowBatteryActive {
+                    // Power save: stay SLC-only, re-center, and emit this fix below.
+                    homeGeofenceCenter = location
+                } else {
+                    LibreLocationPlugin.log("SLC exit detected — distance \(distance)m from home")
+                    transitionToMoving()
+                    return
+                }
             }
         }
 
@@ -420,6 +540,30 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if location.speed > 0.5 {
             lastMovementDate = Date()
         }
+
+        applySpeedAdaptiveAccuracy(location)
+    }
+
+    /// Driving (~10 m/s+) doesn't need Best — NearestTenMeters tracks a car
+    /// fine at a fraction of the power. Drops back to the preset accuracy
+    /// below 7 m/s (hysteresis band avoids flapping at city speeds).
+    private func applySpeedAdaptiveAccuracy(_ location: CLLocation) {
+        guard config.speedAdaptiveAccuracy, isTracking, isMoving, !lowBatteryActive,
+              oneShotCallbacks.isEmpty, location.speed >= 0 else { return }
+        let base = accuracyForConfig()
+        let target: CLLocationAccuracy
+        if location.speed >= 10.0 {
+            target = max(base, kCLLocationAccuracyNearestTenMeters)
+        } else if location.speed <= 7.0 {
+            target = base
+        } else {
+            target = appliedAccuracy ?? base
+        }
+        if appliedAccuracy != target {
+            appliedAccuracy = target
+            locationManager.desiredAccuracy = target
+            LibreLocationPlugin.log("Speed-adaptive accuracy → \(target) (speed \(location.speed) m/s)")
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -470,6 +614,19 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if let error = error {
             LibreLocationPlugin.log("Deferred update error: \(error.localizedDescription)")
         }
+    }
+
+    /// With pausesLocationUpdatesAutomatically, iOS stops streaming on its own
+    /// and will NOT restart it. Fold the native pause into our stationary mode
+    /// so SLC / geofence exit / activity recognition can re-arm streaming.
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        LibreLocationPlugin.log("iOS paused location updates — entering stationary mode")
+        guard isTracking, isMoving else { return }
+        transitionToStationary()
+    }
+
+    func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        LibreLocationPlugin.log("iOS resumed location updates")
     }
 
     // MARK: - Private: Config Application
@@ -524,6 +681,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         // Attempt deferred updates for battery savings
         attemptDeferredUpdates()
+
+        // Battery may already be below threshold at start
+        appliedAccuracy = nil
+        lowBatteryActive = false
+        evaluateBatteryPolicy()
     }
 
     /// Apply config changes to a running session WITHOUT resetting motion state.
@@ -532,6 +694,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private func applyConfigToRunningSession() {
         // Update CLLocationManager properties only if currently in moving state (GPS active)
         if isMoving {
+            appliedAccuracy = nil
             locationManager.desiredAccuracy = accuracyForConfig()
             locationManager.distanceFilter = max(config.distanceFilter, 50.0) // enforce 50m min while moving
             locationManager.showsBackgroundLocationIndicator = config.showsBackgroundLocationIndicator
@@ -731,6 +894,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     private func transitionToMoving() {
         guard isTracking else { return }
+        // Power save owns the radios while active; SLC ticks still emit.
+        guard !lowBatteryActive else { return }
         isMoving = true
         emitMotionChange(isMoving: true)
 
@@ -739,6 +904,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         homeGeofenceCenter = nil
 
         // Start active GPS
+        appliedAccuracy = nil
         locationManager.desiredAccuracy = accuracyForConfig()
         locationManager.distanceFilter = max(config.distanceFilter, 50.0) // enforce 50m min while moving
         locationManager.startUpdatingLocation()

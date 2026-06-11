@@ -260,7 +260,7 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
             )
 
             // Apply additional config fields
-            locationService?.setConfig([
+            var extraConfig: [String: Any] = [
                 "stillnessTimeoutMin": stillnessTimeoutMin,
                 "stillnessRadiusMeters": stillnessRadiusMeters,
                 "heartbeatInterval": heartbeatInterval,
@@ -269,7 +269,12 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 "stopOnTerminate": stopOnTerminate,
                 "keepAwake": keepAwake,
                 "significantChangesOnly": significantChangesOnly,
-            ])
+            ]
+            if let v = args["motionActivityWake"] as? Bool { extraConfig["motionActivityWake"] = v }
+            if let v = args["speedAdaptiveAccuracy"] as? Bool { extraConfig["speedAdaptiveAccuracy"] = v }
+            if let v = args["lowBatterySlcOnly"] as? Bool { extraConfig["lowBatterySlcOnly"] = v }
+            if let v = args["lowBatteryThreshold"] as? Double { extraConfig["lowBatteryThreshold"] = v }
+            locationService?.setConfig(extraConfig)
 
             // Schedule BGTaskScheduler heartbeat for when app is suspended
             if heartbeatInterval > 0 {
@@ -282,14 +287,18 @@ public class LibreLocationPlugin: NSObject, FlutterPlugin {
                 if let threshold = args["activityConfidenceThreshold"] as? Int {
                     motionDetector?.configure(activityConfidenceThreshold: threshold)
                 }
-                // Motion detector is for activity reporting only.
-                // Accelerometer motion does NOT wake GPS — only geofence exit or SLC can.
+                // Accelerometer motion does NOT wake GPS (too noisy), but
+                // confident activity recognition re-arms it when stationary.
                 motionDetector?.start(
                     onMotionChanged: { _ in
-                        // No-op: motion state changes do not affect LocationService
+                        // No-op: raw accelerometer state does not affect LocationService
                     },
                     onActivityChanged: { [weak self] activity in
                         self?.activityStreamHandler?.send(activity)
+                        if let name = activity["activity"] as? String,
+                           let confidence = activity["confidence"] as? Int {
+                            self?.locationService?.onActivityDetected(activity: name, confidence: confidence)
+                        }
                     }
                 )
             }
