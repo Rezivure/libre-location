@@ -45,6 +45,20 @@ class NativeConfig {
   final double maxAccuracy;
   final double maxSpeed;
 
+  /// iOS: confident CMMotionActivity (walking/running/cycling/driving) while
+  /// stationary re-arms continuous GPS without waiting for an SLC tick.
+  final bool motionActivityWake;
+
+  /// iOS: at driving speed desiredAccuracy relaxes to nearest-ten-meters.
+  final bool speedAdaptiveAccuracy;
+
+  /// iOS: below [lowBatteryThreshold] (not charging) drop to
+  /// significant-location-changes only, regardless of motion state.
+  final bool lowBatterySlcOnly;
+
+  /// 0.0–1.0 battery fraction for [lowBatterySlcOnly].
+  final double lowBatteryThreshold;
+
   const NativeConfig({
     this.accuracy = Accuracy.high,
     this.intervalMs = 60000,
@@ -78,6 +92,10 @@ class NativeConfig {
     this.locationFilterEnabled = true,
     this.maxAccuracy = 100.0,
     this.maxSpeed = 83.33,
+    this.motionActivityWake = true,
+    this.speedAdaptiveAccuracy = true,
+    this.lowBatterySlcOnly = true,
+    this.lowBatteryThreshold = 0.20,
   });
 
   Map<String, dynamic> toMap() {
@@ -121,6 +139,10 @@ class NativeConfig {
       'locationFilterEnabled': locationFilterEnabled,
       'maxAccuracy': maxAccuracy,
       'maxSpeed': maxSpeed,
+      'motionActivityWake': motionActivityWake,
+      'speedAdaptiveAccuracy': speedAdaptiveAccuracy,
+      'lowBatterySlcOnly': lowBatterySlcOnly,
+      'lowBatteryThreshold': lowBatteryThreshold,
     };
   }
 
@@ -157,6 +179,10 @@ class NativeConfig {
     bool? locationFilterEnabled,
     double? maxAccuracy,
     double? maxSpeed,
+    bool? motionActivityWake,
+    bool? speedAdaptiveAccuracy,
+    bool? lowBatterySlcOnly,
+    double? lowBatteryThreshold,
   }) {
     return NativeConfig(
       accuracy: accuracy ?? this.accuracy,
@@ -191,6 +217,10 @@ class NativeConfig {
       locationFilterEnabled: locationFilterEnabled ?? this.locationFilterEnabled,
       maxAccuracy: maxAccuracy ?? this.maxAccuracy,
       maxSpeed: maxSpeed ?? this.maxSpeed,
+      motionActivityWake: motionActivityWake ?? this.motionActivityWake,
+      speedAdaptiveAccuracy: speedAdaptiveAccuracy ?? this.speedAdaptiveAccuracy,
+      lowBatterySlcOnly: lowBatterySlcOnly ?? this.lowBatterySlcOnly,
+      lowBatteryThreshold: lowBatteryThreshold ?? this.lowBatteryThreshold,
     );
   }
 
