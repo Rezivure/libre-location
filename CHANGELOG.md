@@ -1,3 +1,7 @@
+## 0.4.1
+
+* **Live tier stays fresh when stationary (iOS/Android).** Lowered the `high` preset's heartbeat to 60s foreground / 90s background so a non-moving device on the live tier keeps emitting position heartbeats (it previously inherited 120s/300s, so a stationary live-sharing phone looked frozen to contacts). Moving behavior and the `balanced`/`low` presets are unchanged.
+
 ## 0.4.0
 
 iOS battery-profile release: Life360-style stationary/motion power management.
