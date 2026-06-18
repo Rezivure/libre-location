@@ -208,7 +208,8 @@ class PresetConfig {
       case TrackingPreset.balanced:
         return const LifecycleOverrides(distanceFilter: 25, accuracy: Accuracy.high, heartbeatInterval: 300, intervalMs: 10000);
       case TrackingPreset.high:
-        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.navigation, heartbeatInterval: 120, intervalMs: 5000);
+        // 60s heartbeat keeps the high/live tier fresh even when stationary.
+        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.navigation, heartbeatInterval: 60, intervalMs: 5000);
     }
   }
 
@@ -220,7 +221,8 @@ class PresetConfig {
       case TrackingPreset.balanced:
         return const LifecycleOverrides(distanceFilter: 100, accuracy: Accuracy.high, heartbeatInterval: 900, intervalMs: 30000);
       case TrackingPreset.high:
-        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.high, heartbeatInterval: 300, intervalMs: 15000);
+        // Backgrounded live sharing still refreshes ~90s when stationary.
+        return const LifecycleOverrides(distanceFilter: 10, accuracy: Accuracy.high, heartbeatInterval: 90, intervalMs: 15000);
     }
   }
 }
