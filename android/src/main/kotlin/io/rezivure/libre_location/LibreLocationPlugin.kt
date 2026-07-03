@@ -182,8 +182,12 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         powerSaveReceiver?.unregister()
         geofenceManager?.destroy()
 
-        // Only stop if stopOnTerminate is true
-        if (currentConfig?.stopOnTerminate != false) {
+        // Only stop if stopOnTerminate is true. Base the decision on the
+        // persisted config, not the nullable in-memory currentConfig, so a
+        // detach on an engine instance that never ran startTracking (e.g. a
+        // headless engine) doesn't wrongly tear down active tracking.
+        val effectiveConfig = currentConfig ?: TrackingConfig.restore(context)
+        if (effectiveConfig?.stopOnTerminate == true) {
             locationManagerWrapper?.stopTracking()
             motionDetector?.stop()
             context.stopService(Intent(context, LocationService::class.java))

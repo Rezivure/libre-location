@@ -8,8 +8,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -54,17 +58,20 @@ class LocationService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var serviceLocationManager: LocationManager? = null
+    private var serviceListener: LocationListener? = null
     private var notificationTitle = "Location Tracking"
     private var notificationBody = "Tracking your location in the background"
     private var notificationPriority = NotificationCompat.PRIORITY_LOW
     private var notificationSticky = true
     private var heartbeatIntervalSec = 0L
     private var keepAwake = false
-    private val heartbeatHandler = Handler(Looper.getMainLooper())
+    private var heartbeatThread: HandlerThread? = null
+    private var heartbeatHandler: Handler? = null
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
             emitHeartbeat()
-            heartbeatHandler.postDelayed(this, heartbeatIntervalSec * 1000L)
+            heartbeatHandler?.postDelayed(this, heartbeatIntervalSec * 1000L)
         }
     }
 
@@ -93,13 +100,23 @@ class LocationService : Service() {
             }
         }
 
-        // Normal start
-        notificationTitle = intent?.getStringExtra(EXTRA_NOTIFICATION_TITLE) ?: notificationTitle
-        notificationBody = intent?.getStringExtra(EXTRA_NOTIFICATION_BODY) ?: notificationBody
-        notificationPriority = intent?.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority) ?: notificationPriority
-        notificationSticky = intent?.getBooleanExtra(EXTRA_NOTIFICATION_STICKY, true) ?: true
-        heartbeatIntervalSec = intent?.getLongExtra(EXTRA_HEARTBEAT_INTERVAL, 0L) ?: 0L
-        keepAwake = intent?.getBooleanExtra(EXTRA_KEEP_AWAKE, false) ?: false
+        // Normal start. On a START_STICKY restart the intent is null and all
+        // extras are lost — fall back to the persisted TrackingConfig so the
+        // service comes back fully configured instead of inert.
+        val restored = if (intent == null) TrackingConfig.restore(this) else null
+
+        notificationTitle = intent?.getStringExtra(EXTRA_NOTIFICATION_TITLE)
+            ?: restored?.notificationTitle ?: notificationTitle
+        notificationBody = intent?.getStringExtra(EXTRA_NOTIFICATION_BODY)
+            ?: restored?.notificationBody ?: notificationBody
+        notificationPriority = intent?.getIntExtra(EXTRA_NOTIFICATION_PRIORITY, notificationPriority)
+            ?: restored?.notificationPriority ?: notificationPriority
+        notificationSticky = intent?.getBooleanExtra(EXTRA_NOTIFICATION_STICKY, true)
+            ?: restored?.notificationSticky ?: true
+        heartbeatIntervalSec = intent?.getLongExtra(EXTRA_HEARTBEAT_INTERVAL, 0L)
+            ?: restored?.heartbeatInterval ?: 0L
+        keepAwake = intent?.getBooleanExtra(EXTRA_KEEP_AWAKE, false)
+            ?: restored?.keepAwake ?: false
 
         val notification = buildNotification()
 
@@ -119,6 +136,11 @@ class LocationService : Service() {
             startHeartbeatLoop()
         }
 
+        // Own an active location subscription in the service itself so fresh
+        // fixes keep flowing even after a START_STICKY restart with no Flutter
+        // engine attached. This is independent of the plugin/engine lifecycle.
+        startServiceLocationUpdates()
+
         Log.d(TAG, "LocationService started (sticky=$notificationSticky, " +
                 "heartbeat=${heartbeatIntervalSec}s, keepAwake=$keepAwake)")
 
@@ -129,6 +151,7 @@ class LocationService : Service() {
         instance = null
         releaseWakeLock()
         stopHeartbeatLoop()
+        stopServiceLocationUpdates()
         stopForeground(STOP_FOREGROUND_REMOVE)
         Log.d(TAG, "LocationService destroyed")
         super.onDestroy()
@@ -230,22 +253,93 @@ class LocationService : Service() {
         }
     }
 
+    // ----- Service-owned location subscription -----
+
+    @SuppressLint("MissingPermission")
+    private fun startServiceLocationUpdates() {
+        if (serviceListener != null) return
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        serviceLocationManager = lm
+
+        val listener = LocationListener { location -> onServiceLocation(location) }
+        serviceListener = listener
+
+        // Interval-based GPS/network updates. A foreground-service of type
+        // location continues to receive these while backgrounded; the interval
+        // is delivered even in Doze for an FGS holder (unlike Handler timers).
+        val intervalMs = if (heartbeatIntervalSec > 0) heartbeatIntervalSec * 1000L else 60_000L
+        try {
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, intervalMs, 0f, listener, Looper.getMainLooper())
+            }
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, intervalMs, 0f, listener, Looper.getMainLooper())
+            }
+            Log.d(TAG, "Service-owned location updates started (interval=${intervalMs}ms)")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "No location permission for service subscription: ${e.message}")
+        }
+    }
+
+    private fun stopServiceLocationUpdates() {
+        serviceListener?.let { serviceLocationManager?.removeUpdates(it) }
+        serviceListener = null
+        serviceLocationManager = null
+    }
+
+    @SuppressLint("WakelockTimeout")
+    private fun onServiceLocation(location: Location) {
+        if (!HeadlessCallbackDispatcher.hasCallback(this)) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pulse = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "libre_location:fix")
+        pulse.acquire(30_000L)
+        try {
+            val posMap = mapOf(
+                "latitude" to location.latitude,
+                "longitude" to location.longitude,
+                "altitude" to location.altitude,
+                "accuracy" to location.accuracy.toDouble(),
+                "speed" to location.speed.toDouble(),
+                "heading" to location.bearing.toDouble(),
+                "timestamp" to location.time,
+                "isMoving" to (location.speed > 0.5f),
+                "provider" to (location.provider ?: "unknown"),
+            )
+            HeadlessCallbackDispatcher.dispatchLocationUpdate(this, posMap)
+        } finally {
+            if (pulse.isHeld) pulse.release()
+        }
+    }
+
     // ----- Heartbeat (in-process, Handler-based) -----
 
     private fun startHeartbeatLoop() {
-        heartbeatHandler.postDelayed(heartbeatRunnable, heartbeatIntervalSec * 1000L)
+        val thread = HandlerThread("libre-heartbeat").also { it.start() }
+        heartbeatThread = thread
+        val handler = Handler(thread.looper)
+        heartbeatHandler = handler
+        handler.postDelayed(heartbeatRunnable, heartbeatIntervalSec * 1000L)
         Log.d(TAG, "Heartbeat loop started: ${heartbeatIntervalSec}s")
     }
 
     private fun stopHeartbeatLoop() {
-        heartbeatHandler.removeCallbacks(heartbeatRunnable)
+        heartbeatHandler?.removeCallbacks(heartbeatRunnable)
+        heartbeatHandler = null
+        heartbeatThread?.quitSafely()
+        heartbeatThread = null
     }
 
+    @SuppressLint("WakelockTimeout")
     private fun emitHeartbeat() {
         Log.d(TAG, "Heartbeat tick")
+        if (!HeadlessCallbackDispatcher.hasCallback(this)) return
 
-        // Dispatch to headless Dart engine if registered (when Flutter UI is gone).
-        if (HeadlessCallbackDispatcher.hasCallback(this)) {
+        // Hold a short wakelock across the fix→emit critical section so the CPU
+        // can't sleep mid-dispatch when we aren't holding the session-long lock.
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pulse = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "libre_location:pulse")
+        pulse.acquire(30_000L)
+        try {
             val locationManager = getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
             try {
                 val lastKnown = locationManager?.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
@@ -266,6 +360,8 @@ class LocationService : Service() {
             } catch (e: SecurityException) {
                 Log.w(TAG, "No permission for headless location: ${e.message}")
             }
+        } finally {
+            if (pulse.isHeld) pulse.release()
         }
     }
 }

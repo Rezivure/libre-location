@@ -37,6 +37,10 @@ object HeadlessCallbackDispatcher {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var idleRunnable: Runnable? = null
     private var isEngineReady = false
+    private var isStarting = false
+    private var inFlight = 0
+    private val pendingReady = mutableListOf<(Boolean) -> Unit>()
+    private var readyTimeout: Runnable? = null
 
     /**
      * Persists the dispatcher and user callback handles from the Dart side.
@@ -63,14 +67,13 @@ object HeadlessCallbackDispatcher {
      */
     fun dispatchLocationUpdate(context: Context, locationData: Map<String, Any?>) {
         mainHandler.post {
+            inFlight++
             ensureEngine(context) { ready ->
                 if (ready) {
                     channel?.invokeMethod("onLocationUpdate", locationData)
-                    resetIdleTimeout(context)
-                } else {
-                    Log.w(TAG, "Engine not ready, buffering to database")
-                    // Location is already persisted by the caller
                 }
+                inFlight--
+                resetIdleTimeout(context)
             }
         }
     }
@@ -80,11 +83,13 @@ object HeadlessCallbackDispatcher {
      */
     fun dispatchHeartbeat(context: Context, heartbeatData: Map<String, Any?>) {
         mainHandler.post {
+            inFlight++
             ensureEngine(context) { ready ->
                 if (ready) {
                     channel?.invokeMethod("onHeartbeat", heartbeatData)
-                    resetIdleTimeout(context)
                 }
+                inFlight--
+                resetIdleTimeout(context)
             }
         }
     }
@@ -92,6 +97,13 @@ object HeadlessCallbackDispatcher {
     private fun ensureEngine(context: Context, onReady: (Boolean) -> Unit) {
         if (engine != null && isEngineReady) {
             onReady(true)
+            return
+        }
+
+        // Startup already in progress: queue this waiter instead of spawning
+        // a second engine that would orphan the first.
+        if (isStarting) {
+            pendingReady.add(onReady)
             return
         }
 
@@ -104,12 +116,14 @@ object HeadlessCallbackDispatcher {
         }
 
         Log.d(TAG, "Starting headless FlutterEngine")
+        isStarting = true
+        pendingReady.add(onReady)
 
         try {
             val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(dispatcherHandle)
             if (callbackInfo == null) {
                 Log.e(TAG, "Could not find callback information for handle: $dispatcherHandle")
-                onReady(false)
+                flushPending(false)
                 return
             }
 
@@ -117,14 +131,13 @@ object HeadlessCallbackDispatcher {
             engine = newEngine
 
             channel = MethodChannel(newEngine.dartExecutor.binaryMessenger, CHANNEL_NAME)
-
-            // Set up method channel to receive "ready" from Dart side
             channel?.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "initialized" -> {
                         isEngineReady = true
                         Log.d(TAG, "Headless Dart isolate ready")
                         result.success(null)
+                        flushPending(true)
                     }
                     else -> result.notImplemented()
                 }
@@ -144,28 +157,48 @@ object HeadlessCallbackDispatcher {
             )
             newEngine.dartExecutor.executeDartCallback(dartCallback)
 
-            // Give Dart isolate time to initialize, then call onReady
-            mainHandler.postDelayed({
-                onReady(isEngineReady)
-            }, 2000L)
+            // Fallback: if Dart never signals "initialized" within the window,
+            // resolve waiters as not-ready (they no-op) rather than hang.
+            readyTimeout = Runnable {
+                if (!isEngineReady) {
+                    Log.w(TAG, "Headless isolate init timed out")
+                    flushPending(false)
+                }
+            }
+            mainHandler.postDelayed(readyTimeout!!, 5000L)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start headless engine: ${e.message}")
             engine = null
             channel = null
-            onReady(false)
+            flushPending(false)
         }
+    }
+
+    private fun flushPending(ready: Boolean) {
+        isStarting = false
+        readyTimeout?.let { mainHandler.removeCallbacks(it) }
+        readyTimeout = null
+        val waiters = pendingReady.toList()
+        pendingReady.clear()
+        waiters.forEach { it(ready) }
     }
 
     private fun resetIdleTimeout(context: Context) {
         idleRunnable?.let { mainHandler.removeCallbacks(it) }
         idleRunnable = Runnable {
+            // Don't tear down while dispatches are still in flight.
+            if (inFlight > 0) {
+                resetIdleTimeout(context)
+                return@Runnable
+            }
             destroyEngine()
         }
         mainHandler.postDelayed(idleRunnable!!, IDLE_TIMEOUT_MS)
     }
 
     private fun destroyEngine() {
+        if (inFlight > 0 || isStarting) return
         Log.d(TAG, "Destroying idle headless engine")
         isEngineReady = false
         channel?.setMethodCallHandler(null)
