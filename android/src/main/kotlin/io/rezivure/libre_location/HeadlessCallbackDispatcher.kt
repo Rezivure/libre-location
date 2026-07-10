@@ -70,10 +70,19 @@ object HeadlessCallbackDispatcher {
             inFlight++
             ensureEngine(context) { ready ->
                 if (ready) {
-                    channel?.invokeMethod("onLocationUpdate", locationData)
+                    // Hold the in-flight count until Dart finishes the async
+                    // Matrix send and replies. Otherwise the idle timer can tear
+                    // the engine down mid-send (esp. the cold first-run client
+                    // init, which can exceed the idle window).
+                    channel?.invokeMethod("onLocationUpdate", locationData, object : MethodChannel.Result {
+                        override fun success(result: Any?) { inFlight--; resetIdleTimeout(context) }
+                        override fun error(code: String, msg: String?, details: Any?) { inFlight--; resetIdleTimeout(context) }
+                        override fun notImplemented() { inFlight--; resetIdleTimeout(context) }
+                    }) ?: run { inFlight--; resetIdleTimeout(context) }
+                } else {
+                    inFlight--
+                    resetIdleTimeout(context)
                 }
-                inFlight--
-                resetIdleTimeout(context)
             }
         }
     }
@@ -86,10 +95,16 @@ object HeadlessCallbackDispatcher {
             inFlight++
             ensureEngine(context) { ready ->
                 if (ready) {
-                    channel?.invokeMethod("onHeartbeat", heartbeatData)
+                    // Hold in-flight until Dart replies (see dispatchLocationUpdate).
+                    channel?.invokeMethod("onHeartbeat", heartbeatData, object : MethodChannel.Result {
+                        override fun success(result: Any?) { inFlight--; resetIdleTimeout(context) }
+                        override fun error(code: String, msg: String?, details: Any?) { inFlight--; resetIdleTimeout(context) }
+                        override fun notImplemented() { inFlight--; resetIdleTimeout(context) }
+                    }) ?: run { inFlight--; resetIdleTimeout(context) }
+                } else {
+                    inFlight--
+                    resetIdleTimeout(context)
                 }
-                inFlight--
-                resetIdleTimeout(context)
             }
         }
     }

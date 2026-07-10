@@ -1,3 +1,7 @@
+## 0.4.3
+
+* **Android headless dispatch reliability.** The native `HeadlessCallbackDispatcher` now waits for the Dart isolate's async reply before releasing its in-flight count, so the headless engine is no longer torn down mid-send while the (potentially slow, cold-init) E2EE send completes. Pairs with the app-side headless handshake wiring. Fixes background location silently stopping once the app process is terminated.
+
 ## 0.4.2
 
 * Background reliability fixes.
