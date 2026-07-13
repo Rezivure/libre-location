@@ -763,4 +763,91 @@ void main() {
       expect(perm, LocationPermission.whileInUse);
     });
   });
+
+  // ── Cold-start stale-session reconcile (issue #287) ──
+
+  group('LibreLocation.start cold-start reconcile', () {
+    TestWidgetsFlutterBinding.ensureInitialized();
+
+    final List<MethodCall> log = [];
+    bool nativeIsTracking = false;
+
+    setUp(() {
+      log.clear();
+      nativeIsTracking = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('libre_location'),
+        (MethodCall methodCall) async {
+          log.add(methodCall);
+          switch (methodCall.method) {
+            case 'isTracking':
+              return nativeIsTracking;
+            case 'startTracking':
+              nativeIsTracking = true;
+              return null;
+            case 'stopTracking':
+              nativeIsTracking = false;
+              return null;
+            default:
+              return null;
+          }
+        },
+      );
+    });
+
+    tearDown(() async {
+      await LibreLocation.stop();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('libre_location'),
+        null,
+      );
+    });
+
+    test('cold start with a stale native session stops it before starting',
+        () async {
+      // Simulate a boot/headless session already live in native before this
+      // (fresh) UI isolate ever called start().
+      nativeIsTracking = true;
+
+      await LibreLocation.start(preset: TrackingPreset.balanced);
+
+      final methods = log.map((c) => c.method).toList();
+      final stopIdx = methods.indexOf('stopTracking');
+      final startIdx = methods.indexOf('startTracking');
+      expect(stopIdx, isNonNegative,
+          reason: 'stale session must be torn down on cold start');
+      expect(startIdx, isNonNegative);
+      expect(stopIdx, lessThan(startIdx),
+          reason: 'stop must happen before the fresh start');
+    });
+
+    test('cold start with no native session does not call stopTracking',
+        () async {
+      nativeIsTracking = false;
+
+      await LibreLocation.start(preset: TrackingPreset.balanced);
+
+      final methods = log.map((c) => c.method).toList();
+      expect(methods, contains('startTracking'));
+      expect(methods, isNot(contains('stopTracking')));
+    });
+
+    test('warm restart (adapter already in this isolate) skips the reconcile',
+        () async {
+      // First start establishes the adapter in this isolate.
+      await LibreLocation.start(preset: TrackingPreset.balanced);
+      log.clear();
+
+      // Second start: native is tracking, but because THIS isolate owns the
+      // adapter it is a normal restart, not a stale cross-isolate session, so
+      // the reconcile stopTracking must not fire (adapter.stop handles teardown).
+      await LibreLocation.start(preset: TrackingPreset.balanced);
+
+      final methods = log.map((c) => c.method).toList();
+      expect(methods, contains('startTracking'));
+      expect(methods, isNot(contains('stopTracking')));
+    });
+  });
 }

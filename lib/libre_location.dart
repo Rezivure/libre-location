@@ -80,12 +80,24 @@ class LibreLocation {
     TrackingPreset? preset,
     LocationConfig config = const LocationConfig(),
   }) async {
-    // Stop any existing adapter
+    // Stop any existing adapter. Capture whether this isolate had one first:
+    // its absence means a cold start (fresh UI isolate after reboot/force-kill).
+    final hadAdapter = _adapter != null;
     _adapter?.stop();
     _adapter = null;
 
     final effectivePreset = preset ?? TrackingPreset.balanced;
     final nativeConfig = PresetConfig.buildNativeConfig(effectivePreset, config);
+
+    // Reconcile a stale native session left over from a boot/headless start
+    // (issue #287). On a cold UI-isolate start, native may still hold an active
+    // session that this isolate never started; a plain startTracking() no-ops
+    // against it and the OS GPS indicator never re-engages. Tear it down first
+    // so start() always cleanly (re-)engages — same effect as the manual
+    // "Sharing location" off/on toggle users found as a workaround.
+    if (!hadAdapter && await LibreLocationPlatform.instance.isTracking) {
+      await LibreLocationPlatform.instance.stopTracking();
+    }
 
     // Start native tracking
     await LibreLocationPlatform.instance.startTracking(nativeConfig);
