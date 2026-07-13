@@ -131,6 +131,58 @@ void main() {
       expect(str, contains('2.0'));
       expect(str, contains('moving: true'));
     });
+
+    group('isValidCoordinates / hasValidFix', () {
+      test('accepts a normal fix', () {
+        expect(Position.isValidCoordinates(37.7749, -122.4194), isTrue);
+      });
+
+      test('accepts extremes at the allowed bounds', () {
+        expect(Position.isValidCoordinates(90.0, 180.0), isTrue);
+        expect(Position.isValidCoordinates(-90.0, -180.0), isTrue);
+      });
+
+      test('rejects exact Null Island sentinel', () {
+        expect(Position.isValidCoordinates(0.0, 0.0), isFalse);
+      });
+
+      test('accepts a real fix on a single zero axis', () {
+        // Only *both* axes at 0 is the sentinel; a genuine equator/prime
+        // meridian fix on one axis is legitimate.
+        expect(Position.isValidCoordinates(0.0, -122.4194), isTrue);
+        expect(Position.isValidCoordinates(37.7749, 0.0), isTrue);
+      });
+
+      test('rejects out-of-range latitude/longitude', () {
+        expect(Position.isValidCoordinates(90.1, 10.0), isFalse);
+        expect(Position.isValidCoordinates(-90.1, 10.0), isFalse);
+        expect(Position.isValidCoordinates(10.0, 180.1), isFalse);
+        expect(Position.isValidCoordinates(10.0, -180.1), isFalse);
+      });
+
+      test('rejects non-finite values', () {
+        expect(Position.isValidCoordinates(double.nan, 10.0), isFalse);
+        expect(Position.isValidCoordinates(10.0, double.nan), isFalse);
+        expect(Position.isValidCoordinates(double.infinity, 10.0), isFalse);
+        expect(
+            Position.isValidCoordinates(10.0, double.negativeInfinity), isFalse);
+      });
+
+      test('hasValidFix reflects the coordinate check', () {
+        final good = Position(
+          latitude: 51.5,
+          longitude: -0.12,
+          timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+        );
+        final nullIsland = Position(
+          latitude: 0.0,
+          longitude: 0.0,
+          timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+        );
+        expect(good.hasValidFix, isTrue);
+        expect(nullIsland.hasValidFix, isFalse);
+      });
+    });
   });
 
   // ── ActivityEvent model tests ──
