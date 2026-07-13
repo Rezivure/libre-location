@@ -65,7 +65,8 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<Position> get positionStream {
     _positionStream ??= _positionChannel
         .receiveBroadcastStream()
-        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)));
+        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)))
+        .where((position) => position.hasValidFix);
     return _positionStream!;
   }
 
@@ -73,7 +74,8 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<Position> get motionChangeStream {
     _motionChangeStream ??= _motionChangeChannel
         .receiveBroadcastStream()
-        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)));
+        .map((event) => Position.fromMap(Map<String, dynamic>.from(event as Map)))
+        .where((position) => position.hasValidFix);
     return _motionChangeStream!;
   }
 
@@ -97,7 +99,8 @@ class MethodChannelLibreLocation extends LibreLocationPlatform {
   Stream<HeartbeatEvent> get heartbeatStream {
     _heartbeatStream ??= _heartbeatChannel
         .receiveBroadcastStream()
-        .map((event) => HeartbeatEvent.fromMap(Map<String, dynamic>.from(event as Map)));
+        .map((event) => HeartbeatEvent.fromMap(Map<String, dynamic>.from(event as Map)))
+        .where((event) => event.position.hasValidFix);
     return _heartbeatStream!;
   }
 

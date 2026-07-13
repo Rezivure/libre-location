@@ -33,6 +33,25 @@ class Position {
     this.headingAccuracy,
   });
 
+  /// Whether [latitude]/[longitude] form a plausible real-world fix.
+  ///
+  /// Native `getLastKnownLocation` can hand back partial or sentinel fixes
+  /// (a non-finite axis, an out-of-range value, or exact `0,0`/"Null Island")
+  /// before a real GPS lock lands. Emitting those makes a contact appear to
+  /// jump to the Gulf of Guinea / Indian Ocean. Callers should drop positions
+  /// that fail this check rather than forwarding them.
+  static bool isValidCoordinates(double latitude, double longitude) {
+    if (!latitude.isFinite || !longitude.isFinite) return false;
+    if (latitude < -90.0 || latitude > 90.0) return false;
+    if (longitude < -180.0 || longitude > 180.0) return false;
+    // Exact 0,0 is the classic "no fix yet" sentinel, never a real share.
+    if (latitude == 0.0 && longitude == 0.0) return false;
+    return true;
+  }
+
+  /// True when this position carries a plausible real-world fix.
+  bool get hasValidFix => isValidCoordinates(latitude, longitude);
+
   factory Position.fromMap(Map<String, dynamic> map) {
     return Position(
       latitude: (map['latitude'] as num).toDouble(),
