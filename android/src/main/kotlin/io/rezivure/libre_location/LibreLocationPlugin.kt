@@ -562,13 +562,16 @@ class LibreLocationPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             motionDetector?.updateConfig(newConfig)
         }
 
-        // Update notification if service is running
+        // Push interval + notification into the running FGS so the network
+        // listener restarts at the new heartbeat cadence (not notification-only).
         if (LocationService.isRunning()) {
             val serviceIntent = Intent(context, LocationService::class.java).apply {
-                action = LocationService.ACTION_UPDATE_NOTIFICATION
+                action = LocationService.ACTION_UPDATE_CONFIG
                 putExtra(LocationService.EXTRA_NOTIFICATION_TITLE, newConfig.notificationTitle)
                 putExtra(LocationService.EXTRA_NOTIFICATION_BODY, newConfig.notificationBody)
                 putExtra(LocationService.EXTRA_NOTIFICATION_PRIORITY, newConfig.notificationPriority)
+                putExtra(LocationService.EXTRA_NOTIFICATION_STICKY, newConfig.notificationSticky)
+                putExtra(LocationService.EXTRA_HEARTBEAT_INTERVAL, newConfig.heartbeatInterval)
             }
             context.startService(serviceIntent)
         }
