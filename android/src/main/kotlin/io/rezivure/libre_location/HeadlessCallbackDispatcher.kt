@@ -9,6 +9,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
+import java.util.ArrayDeque
 
 /**
  * Manages a headless FlutterEngine for executing Dart callbacks when the
@@ -22,6 +23,8 @@ import io.flutter.view.FlutterCallbackInformation
  *
  * Thread safety: All FlutterEngine operations happen on the main looper.
  * Memory: The engine is destroyed after [IDLE_TIMEOUT_MS] of inactivity.
+ * Dispatch: Location and heartbeat invokes are FIFO-serialized so only one
+ * Dart call is outstanding — prevents overlapping vod.init() in the isolate.
  */
 object HeadlessCallbackDispatcher {
 
@@ -32,6 +35,12 @@ object HeadlessCallbackDispatcher {
     private const val CHANNEL_NAME = "libre_location/headless"
     private const val IDLE_TIMEOUT_MS = 30_000L
 
+    private data class PendingDispatch(
+        val context: Context,
+        val method: String,
+        val arguments: Map<String, Any?>,
+    )
+
     private var engine: FlutterEngine? = null
     private var channel: MethodChannel? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -39,6 +48,8 @@ object HeadlessCallbackDispatcher {
     private var isEngineReady = false
     private var isStarting = false
     private var inFlight = 0
+    private var dispatchBusy = false
+    private val dispatchQueue = ArrayDeque<PendingDispatch>()
     private val pendingReady = mutableListOf<(Boolean) -> Unit>()
     private var readyTimeout: Runnable? = null
 
@@ -66,47 +77,51 @@ object HeadlessCallbackDispatcher {
      * Starts the FlutterEngine if not already running.
      */
     fun dispatchLocationUpdate(context: Context, locationData: Map<String, Any?>) {
-        mainHandler.post {
-            inFlight++
-            ensureEngine(context) { ready ->
-                if (ready) {
-                    // Hold the in-flight count until Dart finishes the async
-                    // Matrix send and replies. Otherwise the idle timer can tear
-                    // the engine down mid-send (esp. the cold first-run client
-                    // init, which can exceed the idle window).
-                    channel?.invokeMethod("onLocationUpdate", locationData, object : MethodChannel.Result {
-                        override fun success(result: Any?) { inFlight--; resetIdleTimeout(context) }
-                        override fun error(code: String, msg: String?, details: Any?) { inFlight--; resetIdleTimeout(context) }
-                        override fun notImplemented() { inFlight--; resetIdleTimeout(context) }
-                    }) ?: run { inFlight--; resetIdleTimeout(context) }
-                } else {
-                    inFlight--
-                    resetIdleTimeout(context)
-                }
-            }
-        }
+        enqueue(context, "onLocationUpdate", locationData)
     }
 
     /**
      * Sends a heartbeat event to the Dart headless callback.
      */
     fun dispatchHeartbeat(context: Context, heartbeatData: Map<String, Any?>) {
+        enqueue(context, "onHeartbeat", heartbeatData)
+    }
+
+    private fun enqueue(context: Context, method: String, arguments: Map<String, Any?>) {
+        val appContext = context.applicationContext
         mainHandler.post {
-            inFlight++
-            ensureEngine(context) { ready ->
-                if (ready) {
-                    // Hold in-flight until Dart replies (see dispatchLocationUpdate).
-                    channel?.invokeMethod("onHeartbeat", heartbeatData, object : MethodChannel.Result {
-                        override fun success(result: Any?) { inFlight--; resetIdleTimeout(context) }
-                        override fun error(code: String, msg: String?, details: Any?) { inFlight--; resetIdleTimeout(context) }
-                        override fun notImplemented() { inFlight--; resetIdleTimeout(context) }
-                    }) ?: run { inFlight--; resetIdleTimeout(context) }
-                } else {
-                    inFlight--
-                    resetIdleTimeout(context)
-                }
+            dispatchQueue.addLast(PendingDispatch(appContext, method, arguments))
+            pumpQueue()
+        }
+    }
+
+    private fun pumpQueue() {
+        if (dispatchBusy) return
+        val next = dispatchQueue.pollFirst() ?: return
+        dispatchBusy = true
+        inFlight++
+        ensureEngine(next.context) { ready ->
+            if (ready) {
+                // Hold the in-flight count until Dart finishes the async
+                // Matrix send and replies. Otherwise the idle timer can tear
+                // the engine down mid-send (esp. the cold first-run client
+                // init, which can exceed the idle window).
+                channel?.invokeMethod(next.method, next.arguments, object : MethodChannel.Result {
+                    override fun success(result: Any?) { onDispatchSettled(next.context) }
+                    override fun error(code: String, msg: String?, details: Any?) { onDispatchSettled(next.context) }
+                    override fun notImplemented() { onDispatchSettled(next.context) }
+                }) ?: run { onDispatchSettled(next.context) }
+            } else {
+                onDispatchSettled(next.context)
             }
         }
+    }
+
+    private fun onDispatchSettled(context: Context) {
+        inFlight = (inFlight - 1).coerceAtLeast(0)
+        dispatchBusy = false
+        resetIdleTimeout(context)
+        pumpQueue()
     }
 
     private fun ensureEngine(context: Context, onReady: (Boolean) -> Unit) {
@@ -202,8 +217,8 @@ object HeadlessCallbackDispatcher {
     private fun resetIdleTimeout(context: Context) {
         idleRunnable?.let { mainHandler.removeCallbacks(it) }
         idleRunnable = Runnable {
-            // Don't tear down while dispatches are still in flight.
-            if (inFlight > 0) {
+            // Don't tear down while dispatches are still in flight or queued.
+            if (inFlight > 0 || dispatchBusy || dispatchQueue.isNotEmpty()) {
                 resetIdleTimeout(context)
                 return@Runnable
             }
@@ -213,7 +228,7 @@ object HeadlessCallbackDispatcher {
     }
 
     private fun destroyEngine() {
-        if (inFlight > 0 || isStarting) return
+        if (inFlight > 0 || isStarting || dispatchBusy || dispatchQueue.isNotEmpty()) return
         Log.d(TAG, "Destroying idle headless engine")
         isEngineReady = false
         channel?.setMethodCallHandler(null)
