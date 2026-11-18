@@ -1,5 +1,8 @@
 package io.rezivure.libre_location
 
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
 import android.location.Location
 import org.junit.Assert.*
 import org.junit.Test
@@ -11,6 +14,7 @@ import org.junit.Test
  * so we test the filtering/processing logic through observable behavior
  * and configuration validation.
  */
+@RunWith(RobolectricTestRunner::class)
 class LocationManagerWrapperTest {
 
     @Test
