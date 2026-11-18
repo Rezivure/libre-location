@@ -1,5 +1,8 @@
 package io.rezivure.libre_location
 
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
 import android.content.Context
 import android.location.Location
 import org.junit.Assert.*
@@ -7,6 +10,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
 
+@RunWith(RobolectricTestRunner::class)
 class GeofenceManagerTest {
 
     private lateinit var context: Context

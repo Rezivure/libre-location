@@ -13,8 +13,8 @@ class TrackingConfigTest {
         assertEquals(10f, config.distanceFilter)
         assertEquals(1, config.mode)
         assertTrue(config.enableMotionDetection)
-        assertEquals(300_000L, config.stopTimeout)
-        assertEquals(25f, config.stationaryRadius)
+        assertEquals(300_000L, config.stillnessTimeoutMs)
+        assertEquals(25f, config.stillnessRadiusMeters)
         assertFalse(config.stopOnTerminate)
         assertTrue(config.startOnBoot)
         assertTrue(config.locationFilterEnabled)
@@ -30,8 +30,8 @@ class TrackingConfigTest {
             "distanceFilter" to 50.0,
             "mode" to 0,
             "enableMotionDetection" to false,
-            "stopTimeout" to 10L, // Dart sends minutes
-            "stationaryRadius" to 100.0,
+            "stillnessTimeoutMin" to 10L, // Dart sends minutes
+            "stillnessRadiusMeters" to 100.0,
             "stopOnTerminate" to true,
             "startOnBoot" to false,
             "heartbeatInterval" to 300L,
@@ -47,8 +47,8 @@ class TrackingConfigTest {
         assertEquals(50f, config.distanceFilter)
         assertEquals(0, config.mode)
         assertFalse(config.enableMotionDetection)
-        assertEquals(600_000L, config.stopTimeout) // 10 min * 60_000
-        assertEquals(100f, config.stationaryRadius)
+        assertEquals(600_000L, config.stillnessTimeoutMs) // 10 min * 60_000
+        assertEquals(100f, config.stillnessRadiusMeters)
         assertTrue(config.stopOnTerminate)
         assertFalse(config.startOnBoot)
         assertEquals(300L, config.heartbeatInterval)
@@ -113,9 +113,9 @@ class TrackingConfigTest {
     }
 
     @Test
-    fun `stopTimeout conversion from minutes to ms`() {
-        val args = mapOf<String, Any>("stopTimeout" to 1)
+    fun `stillnessTimeoutMin conversion from minutes to ms`() {
+        val args = mapOf<String, Any>("stillnessTimeoutMin" to 1)
         val config = TrackingConfig.fromMap(args)
-        assertEquals(60_000L, config.stopTimeout)
+        assertEquals(60_000L, config.stillnessTimeoutMs)
     }
 }
