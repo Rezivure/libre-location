@@ -135,6 +135,17 @@ object HeadlessCallbackDispatcher {
         pendingReady.add(onReady)
 
         try {
+            // Load the Flutter library before the first call into it. When
+            // the service starts in a fresh process (restart after the process
+            // was killed, boot, app update) no UI has loaded it yet, and the
+            // lookup below threw UnsatisfiedLinkError: the process crashed on
+            // every restart and sharing stayed off until the app was opened.
+            val flutterLoader = FlutterInjector.instance().flutterLoader()
+            if (!flutterLoader.initialized()) {
+                flutterLoader.startInitialization(context)
+            }
+            flutterLoader.ensureInitializationComplete(context, null)
+
             val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(dispatcherHandle)
             if (callbackInfo == null) {
                 Log.e(TAG, "Could not find callback information for handle: $dispatcherHandle")
@@ -158,12 +169,6 @@ object HeadlessCallbackDispatcher {
                 }
             }
 
-            val flutterLoader = FlutterInjector.instance().flutterLoader()
-            if (!flutterLoader.initialized()) {
-                flutterLoader.startInitialization(context)
-            }
-            flutterLoader.ensureInitializationComplete(context, null)
-
             val appBundlePath = flutterLoader.findAppBundlePath()
             val dartCallback = DartExecutor.DartCallback(
                 context.assets,
@@ -182,8 +187,10 @@ object HeadlessCallbackDispatcher {
             }
             mainHandler.postDelayed(readyTimeout!!, 5000L)
 
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start headless engine: ${e.message}")
+        } catch (e: Throwable) {
+            // Throwable, not Exception: a failing native call raises an Error,
+            // which used to take the whole process down instead of this path.
+            Log.e(TAG, "Failed to start headless engine: $e")
             engine = null
             channel = null
             flushPending(false)

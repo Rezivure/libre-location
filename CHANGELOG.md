@@ -1,3 +1,7 @@
+## Unreleased
+
+* **Android: no crash when the service starts without the UI.** When the location service starts in a fresh process (after a reboot, an app update or the process being killed), the headless dispatcher now loads the Flutter library before looking up the callback. Before, the lookup threw `UnsatisfiedLinkError`, the process crashed on every restart and tracking stayed off until the app was opened.
+
 ## 0.4.3
 
 * **Android headless dispatch reliability.** The native `HeadlessCallbackDispatcher` now waits for the Dart isolate's async reply before releasing its in-flight count, so the headless engine is no longer torn down mid-send while the (potentially slow, cold-init) E2EE send completes. Pairs with the app-side headless handshake wiring. Fixes background location silently stopping once the app process is terminated.
